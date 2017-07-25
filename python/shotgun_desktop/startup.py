@@ -93,7 +93,7 @@ def __desktop_engine_supports_authentication_module(engine):
 
     :returns: True if the engine supports the authentication module, False otherwise.
     """
-    if engine.version.lower() == 'undefined':
+    if engine.version.lower() == "undefined":
         logger.warning(
             "The version of the tk-desktop engine is undefined. "
             "Assuming engine it supports sgtk.authentication module."
@@ -111,7 +111,7 @@ def __desktop_engine_supports_websocket(engine):
 
     :returns: True if the engine supports the authentication module, False otherwise.
     """
-    if engine.version.lower() == 'undefined':
+    if engine.version.lower() == "undefined":
         logger.warning(
             "The version of the tk-desktop engine is undefined. "
             "Assuming it has built-in browser integration support."
@@ -710,7 +710,6 @@ def main(**kwargs):
 
     :returns: Error code for the process.
     """
-
     app_bootstrap = _BootstrapProxy(kwargs["app_bootstrap"])
 
     # Do not import sgtk globally to avoid using the wrong sgtk once we bootstrap in
@@ -754,6 +753,7 @@ def main(**kwargs):
 
     from sgtk import authentication
     from sgtk.descriptor import InvalidAppStoreCredentialsError
+    from sgtk.authentication import ShotgunSamlUser
 
     try:
         # Reading user settings from disk.
@@ -774,6 +774,14 @@ def main(**kwargs):
         if not user:
             logger.info("Login canceled. Quitting.")
             return 0
+
+        # In the case where the site is using SSO, the user needs to renew
+        # its claims regularily. So we kick off a separate newewal thread.
+        if isinstance(user, ShotgunSamlUser):
+            logger.debug("Starting SSO claims renewal")
+            user.start_claims_renewal()
+        else:
+            logger.debug("Not using SSO")
 
         # Now that we are logged, we can proceed with launching the
         # application.
