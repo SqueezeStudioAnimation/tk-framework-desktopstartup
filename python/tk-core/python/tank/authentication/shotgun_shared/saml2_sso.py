@@ -33,6 +33,7 @@ log = LogManager.get_logger(__name__)
 # Error messages for events. . Also defined in slmodule/slutils.mu
 # @FIXME: Should import these from slmodule
 HTTP_CANT_CONNECT_TO_SHOTGUN = "Cannot Connect To Shotgun site."
+HTTP_AUTHENTICATE_REQUIRED = "Valid credentials are required."
 HTTP_AUTHENTICATE_SSO_NOT_UPPORTED = "SSO not supported or enabled on that site."
 HTTP_CANT_AUTHENTICATE_SSO_TIMEOUT = "Time out attempting to authenticate to SSO service."
 HTTP_CANT_AUTHENTICATE_SSO_NO_ACCESS = "You have not been granted access to the Shotgun site."
@@ -172,6 +173,9 @@ class Saml2Sso(object):
         self._sso_renew_watchdog_timer.setInterval(self._sso_renew_watchdog_timeout_ms)
         self._sso_renew_watchdog_timer.setSingleShot(True)
         self._sso_renew_watchdog_timer.timeout.connect(self.on_renew_sso_session_timeout)
+
+        # We need a way to trace the current status of our login process.
+        self._login_status = 0
 
         # For debugging purposes
         # @TODO: Find a better way than to use the log level
@@ -355,6 +359,15 @@ class Saml2Sso(object):
                 # This means that the SSO login worked, but that the user does
                 # have access to the site.
                 session.error = HTTP_CANT_AUTHENTICATE_SSO_NO_ACCESS
+            elif error is QtNetwork.QNetworkReply.NetworkError.AuthenticationRequiredError:
+                # This means that the user entered incorrect credentials.
+                if url.startswith(session.host):
+                    session.error = HTTP_AUTHENTICATE_REQUIRED
+                else:
+                    # If we are not on our site, we are on the Identity Provider (IdP) portal site.
+                    # We let it deal with the error.
+                    # Reset the error to None to disregard the error.
+                    session.error = None
             else:
                 session.error = reply.attribute(QtNetwork.QNetworkRequest.HttpReasonPhraseAttribute)
         elif url.startswith(session.host + URL_LOGIN_PATH):
@@ -364,7 +377,7 @@ class Saml2Sso(object):
 
         if session.error:
             # If there are any errors, we exit by force-closing the dialog.
-            log.error("==- on_http_response_finished: %s - %s" % (url, error))
+            log.error("==- on_http_response_finished: %s - %s - %s" % (url, error, session.error))
             self._dialog.reject()
 
     def is_handling_event(self):
@@ -529,8 +542,9 @@ class Saml2Sso(object):
             loop = QtCore.QEventLoop(self._dialog)
             self._dialog.finished.connect(loop.exit)
             self.on_renew_sso_session()
-            res = loop.exec_()
-            return res
+            status = loop.exec_()
+            self._login_status = self._login_status or status
+            return self._login_status
 
         else:
             self._view.show()
@@ -542,7 +556,9 @@ class Saml2Sso(object):
             )
 
             self._dialog.setWindowFlags(QtCore.Qt.WindowStaysOnTopHint)
-            return self._dialog.exec_()
+            status = self._dialog.exec_()
+            self._login_status = self._login_status or status
+            return self._login_status
 
     def on_sso_login_cancel(self, event):
         """
@@ -570,10 +586,14 @@ class Saml2Sso(object):
                 # Let's clear the cookies, and force the use of the GUI.
                 self._session.cookies = ""
                 # Let's have another go, without any cookies this time !
-                self.on_sso_login_attempt()
+                # This will force the GUI to be shown to the user.
+                log.debug("==- Unable to login/renew claims automaticall, presenting GUI to user")
+                status = self.on_sso_login_attempt()
+                self._login_status = self._login_status or status
             else:
                 # end_session = result == QtGui.QDialog.Rejected
                 # self.resolve_event(end_session=end_session)
+                log.debug("==- Resolving event")
                 self.resolve_event()
         else:
             # Should we get a rejected dialog, then we have had a timeout.
