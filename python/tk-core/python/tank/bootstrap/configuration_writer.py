@@ -484,7 +484,7 @@ class ConfigurationWriter(object):
             "project_id": project_id,
             "project_name": project_name,
             "plugin_id": plugin_id,
-            "published_file_entity_type": "PublishedFile",
+            "published_file_entity_type": "TankPublishedFile",
             "use_bundle_cache": True,
             "bundle_cache_fallback_roots": bundle_cache_fallback_paths,
             "use_shotgun_path_cache": True,
