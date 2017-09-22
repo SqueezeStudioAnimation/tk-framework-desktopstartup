@@ -26,6 +26,7 @@ from .util import LocalFileStorageManager
 
 log = LogManager.get_logger(__name__)
 
+
 def from_entity(entity_type, entity_id):
     """
     Factory method that constructs a pipeline configuration given a Shotgun Entity.
@@ -87,19 +88,20 @@ def _from_entity(entity_type, entity_id, force_reread_shotgun_cache):
     # figure out if we are running a tank command / api from a local
     # pipeline config or from a studio level install
     config_context_path = _get_configuration_context()
+    config_context_id = _get_configuration_id()
 
-    if config_context_path:
+    if config_context_id and config_context_path:
         # we are running the tank command or python core API directly from a configuration
         #
         # make sure that the tank command we are launching from belong to a shotgun project
         # that the input entity type/id is associated with.
-        if config_context_path not in [x["path"] for x in all_pc_data]:
+        if config_context_id not in [x["id"] for x in all_pc_data]:
             # the tank command / api proxy that this session was launched for is *not*
             # associated with the given entity type and entity id!
-            raise TankError("The pipeline configuration in '%s' is is associated with a different "
+            raise TankError("The pipeline configuration in '%s' with id %s is is associated with a different "
                             "project from %s %s. To see which pipeline configurations are available "
                             "for a project, open the pipeline configurations page "
-                            "in Shotgun." % (config_context_path, entity_type, entity_id))
+                            "in Shotgun." % (config_context_path, config_context_id, entity_type, entity_id))
 
         # ok we got a pipeline config matching the tank command from which we launched.
         # because we found the pipeline config in the list of PCs for this project,
@@ -124,8 +126,8 @@ def _from_entity(entity_type, entity_id, force_reread_shotgun_cache):
             # incorrectly re-using the same paths.
 
             pcs_msg = ", ".join([
-                            "'%s' (Pipeline config id %s, Project id %s)" % (x["path"], x["id"], x["project_id"])
-                            for x in primary_pc_data])
+                "'%s' (Pipeline config id %s, Project id %s)" % (x["path"], x["id"], x["project_id"])
+                for x in primary_pc_data])
 
             raise TankError("More than one primary pipeline configuration is associated "
                             "with the entity %s %s. This happens if more than one pipeline configuration "
@@ -135,7 +137,6 @@ def _from_entity(entity_type, entity_id, force_reread_shotgun_cache):
 
         # looks good, we got a primary pipeline config that exists
         return PipelineConfiguration(primary_pc_data[0]["path"])
-
 
 
 def from_path(path):
@@ -221,21 +222,21 @@ def _from_path(path, force_reread_shotgun_cache):
     # figure out if we are running a tank command / api from a
     # local pipeline config or from a studio level install
     config_context_path = _get_configuration_context()
+    config_context_id = _get_configuration_id()
 
-    if config_context_path:
+    if config_context_id and config_context_path:
 
         # we are running the tank command or python core API directly from a configuration
         #
-        # now if this tank command is associated with the path, the registered path should be in
+        # now if this tank command is associated with the id, the registered id should be in
         # in the pipeline configuration data coming from
-        if config_context_path not in [x["path"] for x in all_pc_data]:
-
+        if config_context_id not in [x["id"] for x in all_pc_data]:
             pcs_msg = ", ".join([
-                            "'%s' (Pipeline config id %s, Project id %s)" % (x["path"], x["id"], x["project_id"])
-                            for x in all_pc_data])
+                "'%s' (Pipeline config id %s, Project id %s)" % (x["path"], x["id"], x["project_id"])
+                for x in all_pc_data])
 
             raise TankError("You are trying to start Toolkit using the pipeline configuration "
-                            "located in '%s'. The path '%s' you are trying to load is not "
+                            "located in '%s' with id '%s'. The path '%s' you are trying to load is not "
                             "associated with that configuration. Instead, it is "
                             "associated with the following pipeline configurations: %s. "
                             "Please use the tank command or Toolkit API in any of those "
@@ -244,7 +245,7 @@ def _from_path(path, force_reread_shotgun_cache):
                             "the 'tank move_configuration command'. It can also occur if you "
                             "are trying to use a tank command associated with one Project "
                             "to try to operate on a Shot or Asset that belongs to another "
-                            "project." % (config_context_path, path, pcs_msg))
+                            "project." % (config_context_path, config_context_id, path, pcs_msg))
 
         # okay so this pipeline config is valid!
         return PipelineConfiguration(config_context_path)
@@ -253,20 +254,18 @@ def _from_path(path, force_reread_shotgun_cache):
         # we are running a studio level tank command.
         # find the primary pipeline configuration in the list of matching configurations.
         if len(primary_pc_data) == 0:
-
             pcs_msg = ", ".join([
-                            "'%s' (Pipeline config id %s, Project id %s)" % (x["path"], x["id"], x["project_id"])
-                            for x in all_pc_data])
+                "'%s' (Pipeline config id %s, Project id %s)" % (x["path"], x["id"], x["project_id"])
+                for x in all_pc_data])
 
             raise TankError("Cannot find a primary pipeline configuration for path '%s'. "
                             "The following pipeline configurations are associated with the "
                             "path, but none of them is marked as Primary: %s" % (path, pcs_msg))
 
         if len(primary_pc_data) > 1:
-
             pcs_msg = ", ".join([
-                            "'%s' (Pipeline config id %s, Project id %s)" % (x["path"], x["id"], x["project_id"])
-                            for x in primary_pc_data])
+                "'%s' (Pipeline config id %s, Project id %s)" % (x["path"], x["id"], x["project_id"])
+                for x in primary_pc_data])
 
             raise TankError("The path '%s' is associated with more than one Primary pipeline "
                             "configuration. This can happen if there is ambiguity in your project setup, where "
@@ -312,6 +311,30 @@ def _get_configuration_context():
         # associated with the project that the pipeline config is associated with.
         val = pipelineconfig_utils.get_config_install_location(curr_pc_path)
 
+    return val
+
+
+def _get_configuration_id():
+    """
+    Returns a id if the API was invoked via a configuration context, otherwise None.
+
+    If this session was involved (tank command or python API) from a studio level API,
+    e.g. with no connection to any config, None is returned.
+
+    In the case the session was started via a python proxy API or tank command
+    connected to a configuration, the id to that configuration root is returned.
+    The id returned should reflect the exact value stored in the pipeline configuration
+    entry in shotgun.
+
+    :returns: id or None
+    """
+    # default for studio level tank command/API
+    val = None
+    if "TANK_CURRENT_PC" in os.environ:
+        config_path = os.environ["TANK_CURRENT_PC"]
+        pc = PipelineConfiguration(config_path)
+        data = pc._get_metadata()
+        val = data["pc_id"]
     return val
 
 
@@ -462,7 +485,7 @@ def _get_pipeline_configs_for_path(path, data):
             # in the pipeline config before associating it here.
             if pc not in project_paths[project_path]:
                 project_paths[project_path].append(pc)
-    
+
     # step 3 - look at the path we passed in - see if any of the computed
     # project folders are determined to be a parent path
     all_matching_pcs = []
@@ -518,7 +541,6 @@ def _get_pipeline_configs_for_project(project_id, data):
             matching_pipeline_configs.append(pc)
 
     return matching_pipeline_configs
-
 
 
 #################################################################################################################
@@ -629,6 +651,7 @@ def _get_pipeline_configs(force=False):
 
     return data
 
+
 def _load_lookup_cache():
     """
     Load lookup cache file from disk.
@@ -651,6 +674,7 @@ def _load_lookup_cache():
         )
 
     return cache_data
+
 
 @filesystem.with_cleared_umask
 def _add_to_lookup_cache(key, data):
@@ -686,7 +710,6 @@ def _add_to_lookup_cache(key, data):
         log.debug(
             "Failed to add to lookup cache %s. Error: %s" % (cache_file, e)
         )
-
 
 
 def _get_cache_location():
