@@ -885,7 +885,6 @@ class ToolkitManager(object):
                 {"type": "dev", "path": config_override_path},
                 self._sg_connection,
             )
-
         elif self._do_shotgun_config_lookup:
             # do the full resolve where we connect to shotgun etc.
             log.debug("Checking for pipeline configuration overrides in Shotgun.")
