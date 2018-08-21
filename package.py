@@ -14,8 +14,6 @@ def commands():
     # Export tank, sgtk and shotgun_api3 modules.
     env.PYTHONPATH.append('{root}/python/tk-core/python')
     env.PYTHONPATH.append('{root}/python/tk-core/python/tank_vendor')
-    # env.PYTHONPATH.append('/squeeze/software/sgtk/studio/install/core/python')
-    # env.PYTHONPATH.append('/squeeze/software/sgtk/studio/install/core/python/tank_vendor')
 
     # Force shotgun to use out package files instead of the cloud.
     env.SGTK_DESKTOP_STARTUP_LOCATION = '{root}'
@@ -38,4 +36,4 @@ def commands():
     # env.TK_BOOTSTRAP_CONFIG_OVERRIDE = '/home/rlessard/packages/tk_config_squeeze/3.3.999'
 
     # Use this flag to increase the verbosity of the logger.
-    env.TK_DEBUG = 1
+    # env.TK_DEBUG = 1
