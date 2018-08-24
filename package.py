@@ -7,6 +7,7 @@ private_build_requires = ['rez_utils']
 requires = [
     'python-2',
     'tk_shared_bundlecache',
+    'rez',  # for resolving environments
 ]
 
 
