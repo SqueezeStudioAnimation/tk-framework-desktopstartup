@@ -12,22 +12,6 @@ This module contains files which are shared between RV and Toolkit.
 """
 
 # Classes
-from .saml2_sso import (  # noqa
-    Saml2Sso,
-    Saml2SsoError,
-    Saml2SsoMissingQtModuleError,
-    Saml2SsoMultiSessionNotSupportedError,
-)
-
-# Functions
-from .saml2_sso import (  # noqa
-    get_csrf_key,
-    get_csrf_token,
-    get_logger,
-    get_saml_claims_expiration,
-    get_saml_user_name,
-    get_session_id,
-    has_sso_info_in_cookies,
-    is_sso_enabled_on_site,
-    set_logger_parent,
+from .sso_saml2_core import (  # noqa
+    SsoSaml2Core,
 )

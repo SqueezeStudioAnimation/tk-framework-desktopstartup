@@ -33,6 +33,7 @@ from .metrics import EventMetric
 from .shotgun_path import ShotgunPath
 
 from . import filesystem
+from . import json
 
 from .local_file_storage import LocalFileStorageManager
 
@@ -43,3 +44,6 @@ from .errors import PublishResolveError
 from .errors import PublishPathNotDefinedError, PublishPathNotSupported
 
 from .user_settings import UserSettings
+
+from .storage_roots import StorageRoots
+

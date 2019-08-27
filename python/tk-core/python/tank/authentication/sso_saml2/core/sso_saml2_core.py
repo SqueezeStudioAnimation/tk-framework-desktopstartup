@@ -8,25 +8,33 @@
 # agreement to the Shotgun Pipeline Toolkit Source Code License. All rights
 # not expressly granted therein are reserved by Shotgun Software Inc.
 """
-Module to support SSO login via a web browser and automated session renewal.
-
-This module, in conjunction with the slmodule, handles authentication on
-SSO enabled Shotgun websites. When we are in a session connected via SSO, we
-also handle automatic (and headless) renewal of the session.
+Module to support Web login via a web browser and automated session renewal.
 """
 
 import base64
 from Cookie import SimpleCookie
-import json
 import logging
 import os
 import time
-import urllib
-
-from tank_vendor.shotgun_api3 import Shotgun
 
 from .authentication_session_data import AuthenticationSessionData
-
+from .errors import (
+    SsoSaml2MissingQtCore,
+    SsoSaml2MissingQtGui,
+    SsoSaml2MissingQtNetwork,
+    SsoSaml2MissingQtWebKit,
+)
+from .utils import (
+    _decode_cookies,
+    _encode_cookies,
+    _sanitize_http_proxy,
+    get_csrf_key,
+    get_csrf_token,
+    get_logger,
+    get_saml_claims_expiration,
+    get_session_id,
+    get_user_name,
+)
 
 # Error messages for events.
 HTTP_CANT_CONNECT_TO_SHOTGUN = "Cannot Connect To Shotgun site."
@@ -35,96 +43,63 @@ HTTP_AUTHENTICATE_SSO_NOT_UPPORTED = "SSO not supported or enabled on that site.
 HTTP_CANT_AUTHENTICATE_SSO_TIMEOUT = "Time out attempting to authenticate to SSO service."
 HTTP_CANT_AUTHENTICATE_SSO_NO_ACCESS = "You have not been granted access to the Shotgun site."
 
-# Paths for bootstrap the login/renewal process.
-URL_SAML_RENEW_PATH = "/saml/saml_renew"
-URL_SAML_RENEW_LANDING_PATH = "/saml/saml_renew_landing"
-
-# Old login path, which is not used for SSO.
-URL_LOGIN_PATH = "/user/login"
-
 # Timer related values.
 # @TODO: parametrize these and add environment variable overload.
 WATCHDOG_TIMEOUT_MS = 5000
 PREEMPTIVE_RENEWAL_THRESHOLD = 0.9
 SHOTGUN_SSO_RENEWAL_INTERVAL = 5000
 
+# Some IdP (Identity Providers) will use JavaScript code which makes use of ES6.
+# Our Qt4 environment is unfortunately missing some definitions which we need to
+# inject prior to running the IdP code.
+# The reference for this code is:
+#     https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_objects/Function/bind#Polyfill
+FUNCTION_PROTOTYPE_BIND_POLYFILL = """
+// Yes, it does work with `new funcA.bind(thisArg, args)`
+if (!Function.prototype.bind) (function(){
+  var ArrayPrototypeSlice = Array.prototype.slice;
+  Function.prototype.bind = function(otherThis) {
+    if (typeof this !== 'function') {
+      // closest thing possible to the ECMAScript 5
+      // internal IsCallable function
+      throw new TypeError('Function.prototype.bind - what is trying to be bound is not callable');
+    }
 
-def get_logger():
-    """
-    Obtain the logger for this module.
+    var baseArgs= ArrayPrototypeSlice .call(arguments, 1),
+        baseArgsLength = baseArgs.length,
+        fToBind = this,
+        fNOP    = function() {},
+        fBound  = function() {
+          baseArgs.length = baseArgsLength; // reset to default base arguments
+          baseArgs.push.apply(baseArgs, arguments);
+          return fToBind.apply(
+                 fNOP.prototype.isPrototypeOf(this) ? this : otherThis, baseArgs
+          );
+        };
 
-    :returns: The logger instance for this module.
-    """
-    return logging.getLogger(__name__)
+    if (this.prototype) {
+      // Function.prototype doesn't have a prototype property
+      fNOP.prototype = this.prototype; 
+    }
+    fBound.prototype = new fNOP();
 
+    return fBound;
+  };
+})();
+"""
 
-def set_logger_parent(logger_parent):
-    """
-    Set the logger parent to this module's logger.
+class SsoSaml2Core(object):
+    """Performs Shotgun Web login and pre-emptive renewal for SSO sessions."""
 
-    Some client code may want to re-parent this module's logger in order to
-    influence the output.
-
-    :param logger_parent: New logger parent.
-    """
-    logger = get_logger()
-    logger.parent = logger_parent
-
-
-class Saml2SsoError(Exception):
-    """
-    Top level exception for all saml2_sso level runtime errors
-    """
-
-
-class Saml2SsoMultiSessionNotSupportedError(Saml2SsoError):
-    """
-    Exception that indicates the cookies contains sets of tokens from mutliple users.
-    """
-
-
-class Saml2SsoMissingQtModuleError(Saml2SsoError):
-    """
-    Exception that indicates that a required Qt component is missing.
-    """
-
-
-class Saml2SsoMissingQtCore(Saml2SsoMissingQtModuleError):
-    """
-    Exception that indicates that the QtCore component is missing.
-    """
-
-
-class Saml2SsoMissingQtGui(Saml2SsoMissingQtModuleError):
-    """
-    Exception that indicates that the QtGui component is missing.
-    """
-
-
-class Saml2SsoMissingQtNetwork(Saml2SsoMissingQtModuleError):
-    """
-    Exception that indicates that the QtNetwork component is missing.
-    """
-
-
-class Saml2SsoMissingQtWebKit(Saml2SsoMissingQtModuleError):
-    """
-    Exception that indicates that the QtWebKit component is missing.
-    """
-
-
-class Saml2Sso(object):
-    """Performs Shotgun SSO login and pre-emptive renewal."""
-
-    def __init__(self, window_title="SSO", qt_modules=None):
+    def __init__(self, window_title="Web Login", qt_modules=None):
         """
-        Create a SSO login dialog, using a Web-browser like environment.
+        Create a Web login dialog, using a Web-browser like environment.
 
         :param window_title: Title to use for the window.
         :param qt_modules:   a dictionnary of required Qt modules.
                              For Qt4/PySide, we require modules QtCore, QtGui, QtNetwork and QtWebKit
 
-        :returns: The Saml2Sso oject.
+        :returns: The SsoSaml2Core oject.
         """
         qt_modules = qt_modules or {}
 
@@ -137,16 +112,51 @@ class Saml2Sso(object):
         QtWebKit = self._QtWebKit = qt_modules.get('QtWebKit')  # noqa
 
         if QtCore is None:
-            raise Saml2SsoMissingQtCore("The QtCore module is unavailable")
+            raise SsoSaml2MissingQtCore("The QtCore module is unavailable")
 
         if QtGui is None:
-            raise Saml2SsoMissingQtGui("The QtGui module is unavailable")
+            raise SsoSaml2MissingQtGui("The QtGui module is unavailable")
 
         if QtNetwork is None:
-            raise Saml2SsoMissingQtNetwork("The QtNetwork module is unavailable")
+            raise SsoSaml2MissingQtNetwork("The QtNetwork module is unavailable")
 
         if QtWebKit is None:
-            raise Saml2SsoMissingQtWebKit("The QtWebKit module is unavailable")
+            raise SsoSaml2MissingQtWebKit("The QtWebKit module is unavailable")
+
+        class TKWebPage(QtWebKit.QWebPage):
+            """
+            Wrapper class to better control the behaviour when clicking on links
+            in the Qt web browser. If we are asked to open a new tab/window, then
+            we defer the page to the external browser.
+
+            We need to open some links in an external window so as to avoid
+            breaking the authentication flow just to visit an external link.
+            Some examples of links that the user may see which we want to open
+            externally:
+             - Term of use and conditions,
+             - Download of the Google/Duo authenticator app
+             - Any other links which may be presented by SSO Providers
+            """
+
+            def acceptNavigationRequest(self, frame, request, n_type): # noqa
+                """
+                Overloaded method, to properly control the behavioir of clicking on
+                links.
+                :param frame:   QWebFrame where the navigation is requested.
+                                Will be 'None' if the intent is to have the page
+                                open in a new tab or window.
+                :param request: QNetworkRequest which we must accept/refuse.
+                :param n_type:  NavigationType (LinkClicked, FormSubmitted, etc.)
+                :returns:       A boolean indicating if we accept or refuse the request.
+                """
+                get_logger().debug('NavigationRequest, destination and reason: %s (%s)', request.url().toString(), n_type)
+                # A null frame means : open a new window/tab. so we just farm out
+                # the request to the external browser.
+                if frame is None and n_type == QtWebKit.QWebPage.NavigationType.NavigationTypeLinkClicked:
+                    QtGui.QDesktopServices.openUrl(request.url())
+                    return False
+                # Otherwise we accept the default behaviour.
+                return QtWebKit.QWebPage.acceptNavigationRequest(self, frame, request, n_type)
 
         self._event_data = None
         self._sessions_stack = []
@@ -157,9 +167,16 @@ class Saml2Sso(object):
         self._dialog.finished.connect(self.on_dialog_closed)
 
         self._view = QtWebKit.QWebView(self._dialog)
-        self._view.page().networkAccessManager().finished.connect(self.on_http_response_finished)
+        self._view.setPage(TKWebPage())
         self._view.page().networkAccessManager().authenticationRequired.connect(self.on_authentication_required)
         self._view.loadFinished.connect(self.on_load_finished)
+
+        # We want to inject custom JavaScript code before any code is
+        # executed in the loaded web pages. This is to polyfill any
+        # missing functionality.
+        frame = self._view.page().currentFrame()
+        frame.javaScriptWindowObjectCleared.connect(self._polyfill)
+
 
         # Purposely disable the 'Reload' contextual menu, as it should not be
         # used for SSO. Reloading the page confuses the server.
@@ -192,7 +209,8 @@ class Saml2Sso(object):
         # Worst case scenario : should Shotgun modify how the warning is displayed
         # it would show up in the page.
         css_style = base64.b64encode("div.browser_not_approved { display: none !important; }")
-        self._view.settings().setUserStyleSheetUrl("data:text/css;charset=utf-8;base64," + css_style)
+        url = QtCore.QUrl("data:text/css;charset=utf-8;base64," + css_style)
+        self._view.settings().setUserStyleSheetUrl(url)
 
         # Threshold percentage of the SSO session duration, at which
         # time the pre-emptive renewal operation should be started.
@@ -309,7 +327,7 @@ class Saml2Sso(object):
         content = {
             "session_expiration": get_saml_claims_expiration(encoded_cookies),
             "session_id": get_session_id(encoded_cookies),
-            "user_id": get_saml_user_name(encoded_cookies),
+            "user_id": get_user_name(encoded_cookies),
             "csrf_key": get_csrf_key(encoded_cookies),
             "csrf_value": get_csrf_token(encoded_cookies),
         }
@@ -338,10 +356,24 @@ class Saml2Sso(object):
 
         qt_cookies = []
         if self._session is not None:
+            parsed = _sanitize_http_proxy(self._session.http_proxy)
+            if parsed.netloc:
+                self._logger.debug("Using HTTP proxy: %s://%s" % (parsed.scheme, parsed.netloc))
+                proxy = QtNetwork.QNetworkProxy(QtNetwork.QNetworkProxy.HttpProxy, parsed.hostname, parsed.port, parsed.username, parsed.password)
+                QtNetwork.QNetworkProxy.setApplicationProxy(proxy)
+
             cookies = _decode_cookies(self._session.cookies)
             qt_cookies = QtNetwork.QNetworkCookie.parseCookies(cookies.output(header=""))
 
         self._view.page().networkAccessManager().cookieJar().setAllCookies(qt_cookies)
+
+    def is_session_renewal_active(self):
+        """
+        Indicates if the automatic session renewal is used.
+
+        :returns: True if it is, False otherwise.
+        """
+        return self._session_renewal_active
 
     def stop_session_renewal(self):
         """
@@ -422,19 +454,6 @@ class Saml2Sso(object):
         else:
             self._logger.warn("Called resolve_event when no event is being handled.")
 
-    def get_session_data(self):
-        """
-        Get a mimimal subset of session data, for the Shotgun Toolkit.
-
-        :returns: A tuple of the hostname, user_id, session_id and cookies.
-        """
-        return (
-            self._session.host,
-            self._session.user_id,
-            self._session.session_id,
-            self._session.cookies
-        )
-
     def get_session_error(self):
         """
         Get the session error string.
@@ -475,7 +494,7 @@ class Saml2Sso(object):
 
         # We do not update the page cookies, assuming that they have already
         # have been cleared/updated before.
-        self._view.page().mainFrame().load(self._session.host + URL_SAML_RENEW_PATH)
+        self._view.page().mainFrame().load(self._session.host + self._event_data["renew_path"])
 
     def on_renew_sso_session_timeout(self):
         """
@@ -492,6 +511,19 @@ class Saml2Sso(object):
     #
     ############################################################################
 
+    def _polyfill(self):
+        """
+        Called by Qt when the Web Page has changed and before it is loaded.
+
+        The purpose of this function is to inject JavaScript code in a page
+        before any of its code is run. This gives us a way to modify the code's
+        environment and define functions which would be required by that code.
+        """
+        frame = self._view.page().currentFrame()
+        frame.evaluateJavaScript(FUNCTION_PROTOTYPE_BIND_POLYFILL)
+        self._logger.debug("Injected polyfill JavaScript code for Function.prototype.bind")
+
+
     def on_load_finished(self, succeeded):
         """
         Called by Qt when the Web Page has finished loading.
@@ -505,78 +537,22 @@ class Saml2Sso(object):
         (_sso_renew_watchdog_timer) which will trigger and attempt to cleanup
         the process.
 
-        :param succeeded: indicate the status of the load process.
+        :param succeeded: indicate the status of the load process. (not used)
         """
         url = self._view.page().mainFrame().url().toString().encode("utf-8")
         if (
-                self._session is not None and
-                url.startswith(self._session.host + URL_SAML_RENEW_LANDING_PATH)
+                # This callback may be triggered outside the actual auth process
+                # like when we clear the page to use the "about:blank".
+                # or after there has been a prior error. So we ensure that we
+                # update our session and accept only when we really have to.
+                self._session is not None and self._event_data is not None and
+                url.startswith(self._session.host + self._event_data["landing_path"])
         ):
             self.update_session_from_browser()
             if self._session_renewal_active:
                 self.start_sso_renewal()
 
             self._dialog.accept()
-
-        if not succeeded and url != "":
-            self._logger.error("Loading of page \"%s\" generated an error." % url)
-            # @FIXME: Figure out proper way of handling error.
-
-    def on_http_response_finished(self, reply):
-        """
-        This callbaback is triggered after every page load in the QWebView.
-
-        :param reply: The Qt reply HTTP response object.
-        """
-        error = reply.error()
-        url = reply.url().toString().encode("utf-8")
-        session = AuthenticationSessionData() if self._session is None else self._session
-        QtNetwork = self._QtNetwork  # noqa
-
-        if (
-            error is not QtNetwork.QNetworkReply.NetworkError.NoError and
-            error is not QtNetwork.QNetworkReply.NetworkError.OperationCanceledError
-        ):
-            if error is QtNetwork.QNetworkReply.NetworkError.HostNotFoundError:
-                session.error = HTTP_CANT_CONNECT_TO_SHOTGUN
-            elif error is QtNetwork.QNetworkReply.NetworkError.ContentNotFoundError:
-                if url.startswith(session.host + URL_SAML_RENEW_PATH):
-                    # This is likely because the subdomain is not valid.
-                    # e.g. https://foobar.shotgunstudio.com
-                    # Here the domain (shotgunstudio.com) is valid, but not
-                    # foobar.
-                    session.error = HTTP_CANT_CONNECT_TO_SHOTGUN
-                else:
-                    # We silently ignore content not found otherwise.
-                    pass
-            elif error is QtNetwork.QNetworkReply.NetworkError.UnknownContentError:
-                # This means that the site does not support SSO or that
-                # it is not enabled.
-                session.error = HTTP_AUTHENTICATE_SSO_NOT_UPPORTED
-            elif error is QtNetwork.QNetworkReply.NetworkError.ContentOperationNotPermittedError:
-                # This means that the SSO login worked, but that the user does
-                # have access to the site.
-                session.error = HTTP_CANT_AUTHENTICATE_SSO_NO_ACCESS
-            elif error is QtNetwork.QNetworkReply.NetworkError.AuthenticationRequiredError:
-                # This means that the user entered incorrect credentials.
-                if url.startswith(session.host):
-                    session.error = HTTP_AUTHENTICATE_REQUIRED
-                else:
-                    # If we are not on our site, we are on the Identity Provider (IdP) portal site.
-                    # We let it deal with the error.
-                    # Reset the error to None to disregard the error.
-                    session.error = None
-            else:
-                session.error = reply.attribute(QtNetwork.QNetworkRequest.HttpReasonPhraseAttribute)
-        elif url.startswith(session.host + URL_LOGIN_PATH):
-            # If we are being redirected to the login page, then SSO is not
-            # enabled on that site.
-            session.error = HTTP_AUTHENTICATE_SSO_NOT_UPPORTED
-
-        if session.error:
-            # If there are any errors, we exit by force-closing the dialog.
-            self._logger.error("Closing SSO dialog on Error (%s - %s) from loading page: %s" % (error, session.error, url))
-            self._dialog.reject()
 
     def on_authentication_required(self, reply, authenticator):
         """
@@ -607,7 +583,7 @@ class Saml2Sso(object):
 
         :returns: 1 if successful, 0 otherwise.
         """
-        self._logger.debug("SSO login attempt")
+        self._logger.debug("Web login attempt")
         QtCore = self._QtCore  # noqa
 
         if event_data is not None:
@@ -634,27 +610,13 @@ class Saml2Sso(object):
 
             # We append the product code to the GET request.
             self._view.page().mainFrame().load(
-                self._session.host + URL_SAML_RENEW_PATH + "?product=%s" % self._session.product
+                self._session.host + self._event_data["renew_path"] + "?product=%s" % self._session.product
             )
 
             self._dialog.setWindowFlags(QtCore.Qt.WindowStaysOnTopHint)
             status = self._dialog.exec_()
             self._login_status = self._login_status or status
             return self._login_status
-
-    def on_sso_login_cancel(self, event):
-        """
-        Called to cancel an ongoing login attempt.
-
-        :param event: RV event. Not used.
-        """
-        self._logger.debug("Cancel SSO login attempt")
-
-        # We only need to cancel if there is login attempt currently being made.
-        if self.is_handling_event():
-            self.stop_session_renewal()
-            self.resolve_event(end_session=True)
-        self._dialog.accept()
 
     def on_dialog_closed(self, result):
         """
@@ -688,231 +650,3 @@ class Saml2Sso(object):
 
         # Clear the web page
         self._view.page().mainFrame().load("about:blank")
-
-    def on_sso_enable_renewal(self, event):
-        """
-        Called when enabling automatic SSO session renewal.
-
-        A new session will be created if there is not already a current one.
-        This will be in the case of the automatic (and successful)
-        authentication at the startup of the application.
-
-        :param event: Json encoded document describing the RV event.
-        """
-        self._logger.debug("SSO automatic renewal enabled")
-
-        contents = json.loads(event.contents())
-
-        if self._session is None:
-            self.start_new_session({
-                "host": contents["params"]["site_url"],
-                "cookies": contents["params"]["cookies"]
-            })
-        self.start_sso_renewal()
-
-    def on_sso_disable_renewal(self, event):
-        """
-        Called to disable automatic session renewal.
-
-        This will be required when switching to a new connection (where the new
-        site may not using SSO) or at the close of the application.
-        """
-        self._logger.debug("SSO automatic renewal disabled")
-        self.stop_session_renewal()
-
-################################################################################
-#
-# functions
-#
-################################################################################
-
-
-def _decode_cookies(encoded_cookies):
-    """
-    Extract the cookies from a base64 encoded string.
-
-    :param encoded_cookies: An encoded string representing the cookie jar.
-
-    :returns: A SimpleCookie containing all the cookies.
-    """
-    cookies = SimpleCookie()
-    if encoded_cookies:
-        try:
-            decoded_cookies = base64.b64decode(encoded_cookies)
-            cookies.load(decoded_cookies)
-        except TypeError as e:
-            get_logger().error("Unable to decode the cookies: %s" % e.message)
-    return cookies
-
-
-def _encode_cookies(cookies):
-    """
-    Extract the cookies from a base64 encoded string.
-
-    :param cookies: A Cookie.SimpleCookie instance representing the cookie jar.
-
-    :returns: An encoded string representing the cookie jar.
-    """
-    encoded_cookies = base64.b64encode(cookies.output())
-    return encoded_cookies
-
-
-def _get_shotgun_user_id(cookies):
-    """
-    Returns the id of the user in the shotgun instance, based on the cookies.
-
-    :param cookies: A Cookie.SimpleCookie instance representing the cookie jar.
-
-    :returns: A string user id value, or None.
-    """
-    user_id = None
-    user_domain = None
-    for cookie in cookies:
-        # Shotgun appends the unique numerical ID of the user to the cookie name:
-        # ex: shotgun_sso_session_userid_u78
-        if cookie.startswith("shotgun_sso_session_userid_u"):
-            if user_id is not None:
-                # Should we find multiple cookies with the same prefix, it means
-                # that we are using cookies from a multi-session environment. We
-                # have no way to identify the proper user id in the lot.
-                message = "The cookies for this user seem to come from two different shotgun sites: '%s' and '%s'"
-                raise Saml2SsoMultiSessionNotSupportedError(message % (user_domain, cookies[cookie]['domain']))
-            user_id = cookie[28:]
-            user_domain = cookies[cookie]['domain']
-    return user_id
-
-
-def _get_cookie_from_prefix(encoded_cookies, cookie_prefix):
-    """
-    Returns a cookie value based on a prefix to which we will append the user id.
-
-    :param encoded_cookies: An encoded string representing the cookie jar.
-    :param cookie_prefix:   The prefix of the cookie name.
-
-    :returns: A string of the cookie value, or None.
-    """
-    value = None
-    cookies = _decode_cookies(encoded_cookies)
-    key = "%s%s" % (cookie_prefix, _get_shotgun_user_id(cookies))
-    if key in cookies:
-        value = cookies[key].value
-    return value
-
-
-def is_sso_enabled_on_site(url):
-    """
-    Check to see if the web site uses sso.
-
-    We want this method to fail as quickly as possible if there are any
-    issues. Failure is not considered critical, thus known exceptions are
-    silently ignored. At the moment this method is only used to make the
-    GUI show/hide some of the input fields.
-
-    :param url: Url of the site to query.
-
-    :returns:   A boolean indicating if SSO has been enabled or not.
-    """
-    try:
-        # Temporary shotgun instance, used only for the purpose of checking
-        # the site infos.
-        #
-        # The constructor of Shotgun requires either a username/login or
-        # key/scriptname pair or a session_token. The token is only used in
-        # calls which need to be authenticated. The 'info' call does not
-        # require authentication.
-        info = Shotgun(url, session_token="dummy", connect=False).info()
-        get_logger().debug("User authentication method for %s: %s" % (url, info["user_authentication_method"]))
-        if "user_authentication_method" in info:
-            return info["user_authentication_method"] == "saml2"
-    except Exception as e:
-        # Silently ignore exceptions
-        get_logger().debug("Unable to connect with %s, got exception '%s' assuming SSO is not enabled" % (url, e))
-
-    return False
-
-
-def has_sso_info_in_cookies(encoded_cookies):
-    """
-    Indicate if SSO is being used from the Shotgun cookies.
-
-    :param encoded_cookies: An encoded string representing the cookie jar.
-
-    :returns: True if there are SSO-related infos in the cookies.
-    """
-    cookies = _decode_cookies(encoded_cookies)
-    return _get_shotgun_user_id(cookies) is not None
-
-
-def get_saml_claims_expiration(encoded_cookies):
-    """
-    Obtain the expiration time of the saml claims from the Shotgun cookies.
-
-    :param encoded_cookies: An encoded string representing the cookie jar.
-
-    :returns: An int with the time in seconds since January 1st 1970 UTC, or None
-    """
-    # Shotgun appends the unique numerical ID of the user to the cookie name:
-    # ex: shotgun_sso_session_expiration_u78
-    saml_claims_expiration = _get_cookie_from_prefix(encoded_cookies, "shotgun_sso_session_expiration_u")
-    if saml_claims_expiration is not None:
-        saml_claims_expiration = int(saml_claims_expiration)
-    return saml_claims_expiration
-
-
-def get_saml_user_name(encoded_cookies):
-    """
-    Obtain the saml user name from the Shotgun cookies.
-
-    :param encoded_cookies: An encoded string representing the cookie jar.
-
-    :returns: A string with the user name, or None
-    """
-    # Shotgun appends the unique numerical ID of the user to the cookie name:
-    # ex: shotgun_sso_session_userid_u78
-    user_name = _get_cookie_from_prefix(encoded_cookies, "shotgun_sso_session_userid_u")
-    if user_name is not None:
-        user_name = urllib.unquote(user_name)
-    return user_name
-
-
-def get_session_id(encoded_cookies):
-    """
-    Obtain the session id from the Shotgun cookies.
-
-    :param encoded_cookies: An encoded string representing the cookie jar.
-
-    :returns: A string with the session id, or None
-    """
-    session_id = None
-    cookies = _decode_cookies(encoded_cookies)
-    key = "_session_id"
-    if key in cookies:
-        session_id = cookies[key].value
-    return session_id
-
-
-def get_csrf_token(encoded_cookies):
-    """
-    Obtain the csrf token from the Shotgun cookies.
-
-    :param encoded_cookies: An encoded string representing the cookie jar.
-
-    :returns: A string with the csrf token, or None
-    """
-    # Shotgun appends the unique numerical ID of the user to the cookie name:
-    # ex: csrf_token_u78
-    return _get_cookie_from_prefix(encoded_cookies, "csrf_token_u")
-
-
-def get_csrf_key(encoded_cookies):
-    """
-    Obtain the csrf token name from the Shotgun cookies.
-
-    :param encoded_cookies: An encoded string representing the cookie jar.
-
-    :returns: A string with the csrf token name
-    """
-    cookies = _decode_cookies(encoded_cookies)
-    # Shotgun appends the unique numerical ID of the user to the cookie name:
-    # ex: csrf_token_u78
-    return "csrf_token_u%s" % _get_shotgun_user_id(cookies)

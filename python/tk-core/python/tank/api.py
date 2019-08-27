@@ -37,6 +37,8 @@ class Sgtk(object):
     manipulation and the Toolkit template system.
     """
 
+    (DEFAULT, CENTRALIZED, DISTRIBUTED) = range(3)
+
     def __init__(self, project_path):
         """
         .. note:: Do not create this instance directly - Instead, instances of
@@ -160,8 +162,8 @@ class Sgtk(object):
     @property
     def configuration_descriptor(self):
         """
-        The configuration descriptor represents the source of the environments associated
-        with this pipeline configuration.
+        The :class:`~sgtk.descriptor.ConfigDescriptor` which represents the
+        source of the environments associated with this pipeline configuration.
         """
         return self.__pipeline_config.get_configuration_descriptor()
 
@@ -175,13 +177,12 @@ class Sgtk(object):
     @property
     def project_path(self):
         """
-        Path to the primary data directory for a project.
+        Path to the default data directory for a project.
 
         Toolkit Projects that utilize the template system to read and write data
-        to disk will use a number of Shotgun local storages as part of their setup
-        to define where data should be stored on disk. One of these storages
-        are identified as the 'primary' storage root and this is the value
-        returned by this property.
+        to disk will use a number of Shotgun local storages as part of their
+        setup to define where data should be stored on disk. One of these
+        storages is identified as the default storage.
 
         :raises: :class:`TankError` if the configuration doesn't use storages.
         """
@@ -190,27 +191,31 @@ class Sgtk(object):
     @property
     def roots(self):
         """
-        Returns a dictionary of root names to root paths.
+        Returns a dictionary of storage root names to storage root paths.
 
         Toolkit Projects that utilize the template system to read and write data
-        to disk will use a number of Shotgun local storages as part of their setup
-        to define where data should be stored on disk. This method returns a dictionary
-        keyed by storage root name with the value being the path on the current
-        operating system platform::
+        to disk will use one or more Shotgun local storages as part of their
+        setup to define where data should be stored on disk. This method returns
+        a dictionary keyed by storage root name with the value being the path
+        on the current operating system platform::
 
-            {"primary": "/studio/my_project", "textures": "/textures/my_project"}
+            {
+                "work": "/studio/work/my_project",
+                "textures": "/studio/textures/my_project"
+            }
 
         These items reflect the Local Storages that you have set up in Shotgun.
-        Each project in the Pipeline Toolkit is connected to a number of these
+
+        Each project using the template system is connected to a number of these
         storages - these storages define the root points for all the different
         data locations for your project. So for example, if you have a mount
         point for textures, one for renders and one for production data such
         as scene files, you can set up a multi root configuration which uses
         three Local Storages in Shotgun. This method returns the project
-        storage locations for the current project. The key is the name of the local
-        storage, the way it is defined in Shotgun. The value is the path which is defined in the
-        Shotgun Local storage definition for the current operating system,
-        concatenated with the project folder name.
+        storage locations for the current project. The key is the name of the
+        local storage as defined in your configuration. The value is the path
+        which is defined in the associated Shotgun Local storage definition for
+        the current operating system, concatenated with the project folder name.
         """
         return self.__pipeline_config.get_data_roots()
 
@@ -272,13 +277,53 @@ class Sgtk(object):
         return data
 
     @property
+    def configuration_mode(self):
+        """
+        The mode of the currently running configuration:
+
+        - ``sgtk.CENTRALIZED`` if the configuration is part of a
+          :ref:`centralized<centralized_configurations>` setup.
+        - ``sgtk.DISTRIBUTED`` if the configuration is part of a
+          :ref:`distributed<distributed_configurations>` setup.
+        - ``sgtk.DEFAULT`` if the configuration does not have an associated pipeline
+          pipeline configuration but is falling back to its default builtins.
+        """
+        if self.configuration_id is None:
+            return self.DEFAULT
+        # any pipeline configuration which has the linux_path/windows_path or mac_path
+        # populated are defined as a centralized configuration
+        sg_data = self.shotgun.find_one(
+            "PipelineConfiguration",
+            [["id", "is", self.configuration_id]],
+            ["windows_path", "mac_path", "linux_path"]
+        )
+        if sg_data["windows_path"] or sg_data["mac_path"] or sg_data["linux_path"]:
+            return self.CENTRALIZED
+        else:
+            return self.DISTRIBUTED
+
+    @property
     def configuration_name(self):
         """
-        The name of the currently running pipeline configuration
-        
-        :returns: pipeline configuration name as string, e.g. 'primary'
+        The name of the currently running Shotgun Pipeline
+        Configuration, e.g. ``Primary``.
+        If the current session does not have an associated
+        pipeline configuration in Shotgun (for example
+        because you are running the built-in integrations),
+        ``None`` will be returned.
         """
         return self.__pipeline_config.get_name()
+
+    @property
+    def configuration_id(self):
+        """
+        The associated Shotgun pipeline configuration id.
+        If the current session does not have an associated
+        pipeline configuration in Shotgun (for example
+        because you are running the built-in integrations),
+        ``None`` will be returned.
+        """
+        return self.__pipeline_config.get_shotgun_id()
 
     ##########################################################################################
     # public methods
@@ -343,6 +388,25 @@ class Sgtk(object):
         from . import commands
         return commands.get_command(command_name, self)
         
+    def templates_from_path(self, path):
+        """
+        Finds templates that matches the given path::
+
+            >>> import sgtk
+            >>> tk = sgtk.sgtk_from_path("/studio/project_root")
+            >>> tk.templates_from_path("/studio/my_proj/assets/Car/Anim/work")
+            <Sgtk Template maya_asset_project: assets/%(Asset)s/%(Step)s/work>
+
+
+        :param path: Path to match against a template
+        :returns: list of :class:`TemplatePath` or [] if no match could be found.
+        """
+        matched_templates = []
+        for key, template in self.templates.items():
+            if template.validate(path):
+                matched_templates.append(template)
+        return matched_templates
+            
     def template_from_path(self, path):
         """
         Finds a template that matches the given path::
@@ -356,11 +420,8 @@ class Sgtk(object):
         :param path: Path to match against a template
         :returns: :class:`TemplatePath` or None if no match could be found.
         """
-        matched_templates = []
-        for key, template in self.templates.items():
-            if template.validate(path):
-                matched_templates.append(template)
-
+        matched_templates = self.templates_from_path(path)
+        
         if len(matched_templates) == 0:
             return None
         elif len(matched_templates) == 1:
@@ -683,13 +744,13 @@ class Sgtk(object):
     def context_from_entity_dictionary(self, entity_dictionary):
         """
         Derives a context from a shotgun entity dictionary. This will try to use any
-        linked information available in the dictionary where possible but if it can't 
+        linked information available in the dictionary where possible but if it can't
         determine a valid context then it will fall back to :meth:`context_from_entity` which
         may result in a Shotgun path cache query and be considerably slower.
 
         The following values for ``entity_dictionary`` will result in a context being
         created without falling back to a potential Shotgun query - each entity in the
-        dictionary (including linked entities) must have the fields: 'type', 'id' and 
+        dictionary (including linked entities) must have the fields: 'type', 'id' and
         'name' (or the name equivalent for specific entity types, e.g. 'content' for
         Step entities, 'code' for Shot entities, etc.)::
 
@@ -705,6 +766,12 @@ class Sgtk(object):
              "step": {"type": "Step", "id": 101112, "name": "Anm"}
             }
 
+            {"type": "PublishedFile", "id": 42, "code": "asset.ma",
+             "task": {type": "Task", "id": 789, "content": "Animation"}
+             "project": {"type": "Project", "id": 123, "name": "My Project"}
+             "entity": {"type": "Shot", "id": 456, "name": "Shot 001"}
+            }
+
         The following values for ``entity_dictionary`` don't contain enough information to
         fully form a context so the code will fall back to :meth:`context_from_entity` which
         may then result in a Shotgun query to retrieve the missing information::
@@ -718,6 +785,13 @@ class Sgtk(object):
             # missing linked project name and linked step
             {"type": "Task", "id": 789, "content": "Animation",
              "project": {"type": "Project", "id": 123}}
+             "entity": {"type": "Shot", "id": 456, "name": "Shot 001"}
+            }
+
+            # Missing publish name.
+            {"type": "PublishedFile", "id": 42,
+             "task": {type": "Task", "id": 789, "content": "Animation"}
+             "project": {"type": "Project", "id": 123, "name": "My Project"}
              "entity": {"type": "Shot", "id": 456, "name": "Shot 001"}
             }
 
@@ -801,53 +875,31 @@ class Sgtk(object):
 def sgtk_from_path(path):
     """
     Creates a Toolkit Core API instance based on a path to a configuration
-    or a path to any file inside a project root location.
+    or a path to any file inside a project root location. This factory
+    method will do the following two things:
 
-    This factory method will do the following:
+    **When the path points at a configuration**
 
-    - If the given path is determined to be pointing at a pipeline configuration,
-      checks will be made to determine that the currently imported ``sgtk`` module is
-      associated with the configuration. There are two ways this can be valid:
+    If the given path is determined to be pointing at a pipeline configuration,
+    checks will be made to determine that the currently imported ``sgtk`` module
+    is the same version that the configuration requires.
 
-        - Either the configuration is localized, meaning that has it's
-          own ``sgtk`` core module. In that case, it is validated that the ``sgtk``
-          module currently running is exactly that core API belonging to the configuration.
+    **When the path points at a project file**
 
-        - ...or the configuration is sharing an ``sgtk`` core with other configurations.
-          in this case, is is validated that the currently imported ``sgtk`` module
-          is that shared core that the configuration requires.
+    If the given path is to a file (e.g. a maya file for example), the method will
+    retrieve all projects from Shotgun, including their ``Project.tank_name``
+    project root folder fields and associated pipeline configurations. It will then
+    walk up the path hierarchy of the given path until one of the project roots are
+    matching the path. For that project, all pipeline configurations are then retrieved.
 
-    - If the given path is to a file (e.g. a maya file for example), the method will
-      do the following:
+    .. note:: If more than one configuration is matching, the
+              primary one will take precendence.
 
-       - Retrieve all projects from Shotgun, including project their `Project.tank_name`
-         project root folder fields, and associated pipeline configurations.
+    **Shared cores and localized cores**
 
-       - Walk up the path hierarchy of the given path until one of the project roots are
-         matching the path.
-
-       - Get a list of matching pipeline configurations for that project.
-
-       - Ensure that the currently imported ``sgtk`` module is a valid configuration for
-         the matching configurations. If more than one configuration is matching, the
-         primary will take precendence.
-
-    This method can be used if you have a toolkit project installed in a particular location and
-    want to write a script that initializes it. For example, if a Toolkit configuration
-    is set up in ``/mnt/projects/hidden_forest/tk_config``, you could initialize it like this::
-
-        # add the core of the project to the pythonpath
-        import sys
-        sys.path.append("/mnt/projects/hidden_forest/tk_config/install/core/python")
-
-        # now import the API
-        import sgtk
-
-        # import the configuration
-        tk = sgtk.sgtk_from_path("/mnt/projects/hidden_forest/tk_config")
-
-    If you have a shared core for all your projects, you could pass a file path to this
-    method and toolkit would automatically figure out which configuration would be suitable::
+    If you have a shared core for all your projects, you can follow a pattern where
+    you add this shared core to the ``PYTHONPATH`` and you can launch Toolkit for any
+    project file on disk (or Shotgun entity) on your entire site easily::
 
         # add the shared core to the pythonpath
         import sys
@@ -859,6 +911,8 @@ def sgtk_from_path(path):
         # request that the API produced a tk instance suitable for a given file
         tk = sgtk.sgtk_from_path("/mnt/projects/hidden_forest/shots/aa/aa_001/lighting/foreground.v002.ma")
 
+    .. note:: The :ref:`bootstrap_api` is now the recommended solution
+              for building a pattern that can launch an engine for any given entity on a site.
 
     :param path: Path to pipeline configuration or to a folder associated with a project.
     :returns: :class:`Sgtk` instance
@@ -870,11 +924,9 @@ def sgtk_from_entity(entity_type, entity_id):
     Creates a Toolkit Core API instance given an entity in Shotgun.
 
     The given object will be looked up in Shotgun, its associated pipeline configurations
-    will be determined, and compared against the currently imported ``sgtk`` module.
-
+    will be determined, and compared against the currently imported :class:`sgtk` module.
     The logic is identical to the one outlined in :meth:`sgtk_from_path`, but for
-    a Shotgun entity rather than a path. For more details, see the documentation for
-    that method.
+    a Shotgun entity rather than a path. For more details, see :meth:`sgtk_from_path`.
 
     :param entity_type: Shotgun entity type, e.g. ``Shot``
     :param entity_id: Shotgun entity id

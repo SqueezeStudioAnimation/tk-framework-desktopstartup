@@ -9,12 +9,18 @@
 # not expressly granted therein are reserved by Shotgun Software Inc.
 import os
 import inspect
+import os
 
 from .import_handler import CoreImportHandler
 
 from ..log import LogManager
 from .. import pipelineconfig_utils
 from .. import constants
+from ..authentication import (
+    get_shotgun_authenticator_support_web_login,
+    serialize_user,
+    ShotgunSamlUser,
+)
 
 log = LogManager.get_logger(__name__)
 
@@ -24,7 +30,10 @@ class Configuration(object):
     An abstraction representation around a toolkit configuration.
     """
 
-    (LOCAL_CFG_UP_TO_DATE, LOCAL_CFG_MISSING, LOCAL_CFG_DIFFERENT, LOCAL_CFG_INVALID) = range(4)
+    LOCAL_CFG_UP_TO_DATE = "LOCAL_CFG_UP_TO_DATE"
+    LOCAL_CFG_MISSING = "LOCAL_CFG_MISSING"
+    LOCAL_CFG_DIFFERENT = "LOCAL_CFG_DIFFERENT"
+    LOCAL_CFG_INVALID = "LOCAL_CFG_INVALID"
 
     def __init__(self, path, descriptor):
         """
@@ -85,6 +94,8 @@ class Configuration(object):
         """
         Returns a tk instance for this configuration.
 
+        It swaps the core out if needed and ensure we use the right login.
+
         :param sg_user: Authenticated Shotgun user to associate
                         the tk instance with.
 
@@ -103,8 +114,11 @@ class Configuration(object):
             core_path = pipelineconfig_utils.get_core_python_path_for_config(path)
 
         # Get the user before the core swapping and serialize it.
-        from ..authentication import serialize_user, ShotgunSamlUser
         serialized_user = serialize_user(sg_user)
+
+        # Caching support for the Web authentication flow.
+        support_web_login = get_shotgun_authenticator_support_web_login()
+        log.debug("Caching the old core's support of the Unified Login Flow: %s" % support_web_login)
 
         # Stop claims renewal before swapping core, but only if the claims loop
         # is actually active.
@@ -115,12 +129,24 @@ class Configuration(object):
         else:
             uses_claims_renewal = False
 
-        # swap the core out
-        CoreImportHandler.swap_core(core_path)
-
-        log.debug("Core swapped, authenticated user will be set.")
+        if self._swap_core_if_needed(python_core_path):
+            log.debug("Core swapped, authenticated user will be set.")
+        else:
+            log.debug("Core didn't need to be swapped, authenticated user will be set.")
 
         sg_user = self._set_authenticated_user(sg_user, sg_user.login, serialized_user)
+
+        if support_web_login:
+            try:
+                from ..authentication import set_shotgun_authenticator_support_web_login
+                log.debug("This core fully supports the Unified Login Flow.")
+                set_shotgun_authenticator_support_web_login(support_web_login)
+            except ImportError:
+                log.warning(
+                    "This swapped core does not support the Unified Login Flow,"
+                    "but the original core did. This may lead to problems with"
+                    "session renewal or re-authentication."
+                )
 
         # If we're swapping into a core that supports authentication, restart claims renewal. Note
         # that here we're not testing that the API supports claims renewal as to not complexify this
@@ -136,8 +162,26 @@ class Configuration(object):
             log.debug("Restarting claims renewal.")
             sg_user.start_claims_renewal()
 
-        # perform a local import here to make sure we are getting
-        # the newly swapped in core code
+        return self._tank_from_path(path), sg_user
+
+    def cache_bundles(self, pipeline_configuration, engine_constraint, progress_cb):
+        """
+        Caches bundles for the configuration.
+
+        Default implementation is valid for a configuration which has an already pre-populated
+        local bundle cache.
+        """
+        log.debug("Configuration has local bundle cache, skipping bundle caching.")
+
+    def _tank_from_path(self, path):
+        """
+        Perform a tank_from_path for the given pipeline config path.
+
+        :param str path: A pipeline config path for the current os.
+        :returns: A :class:`Sgtk` instance.
+        """
+        # Perform a local import here to make sure we are getting
+        # the newly swapped in core code, if it was swapped
         from .. import api
         from .. import pipelineconfig
 
@@ -160,7 +204,38 @@ class Configuration(object):
         log.debug("Bootstrapped into tk instance %r (%r)" % (tk, tk.pipeline_configuration))
         log.debug("Core API code located here: %s" % inspect.getfile(tk.__class__))
 
-        return tk, sg_user
+        return tk
+
+    def _swap_core_if_needed(self, target_python_core_path):
+        """
+        Swap the current tk-core with the one at the given path if their paths
+        are not identical.
+
+        :param str target_core_path: Full path to the required tk-core.
+        :returns: A bool, True if core was swapped, False otherwise.
+        """
+        current_python_core_path = self._get_current_core_python_path()
+
+        if target_python_core_path != current_python_core_path:
+            CoreImportHandler.swap_core(target_python_core_path)
+            return True
+
+        log.debug(
+            "Avoided core swap on identical paths: '%s' (current) vs '%s' (target)" % (
+                current_python_core_path, target_python_core_path
+            )
+        )
+        return False
+
+    def _get_current_core_python_path(self):
+        """
+        Returns the path to the python folder where the current core is.
+
+        :returns: a string.
+        """
+        import sgtk
+        # Remove sgtk/__init__.py from the module name to get the "python" folder.
+        return os.path.abspath(os.path.dirname(os.path.dirname(sgtk.__file__)))
 
     def _set_authenticated_user(self, bootstrap_user, bootstrap_user_login, serialized_user):
         """

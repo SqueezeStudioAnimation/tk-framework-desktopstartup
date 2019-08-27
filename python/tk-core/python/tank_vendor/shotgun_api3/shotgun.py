@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """
  -----------------------------------------------------------------------------
- Copyright (c) 2009-2017, Shotgun Software Inc.
+ Copyright (c) 2009-2018, Shotgun Software Inc.
 
  Redistribution and use in source and binary forms, with or without
  modification, are permitted provided that the following conditions are met:
@@ -46,6 +46,7 @@ import urllib
 import urllib2      # used for image upload
 import urlparse
 import shutil       # used for attachment download
+import httplib      # Used for secure file upload.
 
 # use relative import for versions >=2.5 and package import for python versions <2.5
 if (sys.version_info[0] > 2) or (sys.version_info[0] == 2 and sys.version_info[1] >= 6):
@@ -91,7 +92,7 @@ except ImportError, e:
 
 # ----------------------------------------------------------------------------
 # Version
-__version__ = "3.0.35"
+__version__ = "3.0.39"
 
 # ----------------------------------------------------------------------------
 # Errors
@@ -130,6 +131,13 @@ class MissingTwoFactorAuthenticationFault(Fault):
 class UserCredentialsNotAllowedForSSOAuthenticationFault(Fault):
     """
     Exception when the server is configured to use SSO. It is not possible to use
+    a username/password pair to authenticate on such server.
+    """
+    pass
+
+class UserCredentialsNotAllowedForOxygenAuthenticationFault(Fault):
+    """
+    Exception when the server is configured to use Oxygen. It is not possible to use
     a username/password pair to authenticate on such server.
     """
     pass
@@ -331,7 +339,11 @@ class _Config(object):
     Container for the client configuration.
     """
 
-    def __init__(self):
+    def __init__(self, sg):
+        """
+        :param sg: Shotgun connection.
+        """
+        self._sg = sg
         self.max_rpc_attempts = 3
         # From http://docs.python.org/2.6/library/httplib.html:
         # If the optional timeout parameter is given, blocking operations
@@ -340,7 +352,7 @@ class _Config(object):
         self.timeout_secs = None
         self.api_ver = 'api3'
         self.convert_datetimes_to_utc = True
-        self.records_per_page = 500
+        self._records_per_page = None
         self.api_key = None
         self.script_name = None
         self.user_login = None
@@ -370,6 +382,17 @@ class _Config(object):
         self.session_token = None
         self.authorization = None
         self.no_ssl_validation = False
+
+    @property
+    def records_per_page(self):
+        """
+        The records per page value from the server.
+        """
+        if self._records_per_page is None:
+            # Check for api_max_entities_per_page in the server info and change the record per page
+            # value if it is supplied.
+            self._records_per_page = self._sg.server_info.get('api_max_entities_per_page') or 500
+        return self._records_per_page
 
 
 class Shotgun(object):
@@ -519,7 +542,7 @@ class Shotgun(object):
             if connect:
                 raise ValueError("must provide login/password, session_token or script_name/api_key")
 
-        self.config = _Config()
+        self.config = _Config(self)
         self.config.api_key = api_key
         self.config.script_name = script_name
         self.config.user_login = login
@@ -596,9 +619,6 @@ class Shotgun(object):
         # call to server will only be made once and will raise error
         if connect:
             self.server_caps
-
-        # Check for api_max_entities_per_page in the server info and change the record per page value if it is supplied.
-        self.config.records_per_page = self.server_info.get('api_max_entities_per_page') or self.config.records_per_page
 
         # When using auth_token in a 2FA scenario we need to switch to session-based
         # authentication because the auth token will no longer be valid after a first use.
@@ -2231,6 +2251,23 @@ class Shotgun(object):
         """
         # Basic validations of the file to upload.
         path = os.path.abspath(os.path.expanduser(path or ""))
+
+        # We need to check for string encodings that we aren't going to be able
+        # to support later in the upload process. If the given path wasn't already
+        # unicode, we will try to decode it as utf-8, and if that fails then we
+        # have to raise a sane exception. This will always work for ascii and utf-8
+        # encoded strings, but will fail on some others if the string includes non
+        # ascii characters.
+        if not isinstance(path, unicode):
+            try:
+                path = path.decode("utf-8")
+            except UnicodeDecodeError:
+                raise ShotgunError(
+                    "Could not upload the given file path. It is encoded as "
+                    "something other than utf-8 or ascii. To upload this file, "
+                    "it can be string encoded as utf-8, or given as unicode: %s" % path
+                )
+
         if not os.path.isfile(path):
             raise ShotgunError("Path must be a valid file, got '%s'" % path)
         if os.path.getsize(path) == 0:
@@ -2239,10 +2276,8 @@ class Shotgun(object):
         is_thumbnail = (field_name in ["thumb_image", "filmstrip_thumb_image", "image",
                                        "filmstrip_image"])
 
-        # Version.sg_uploaded_movie is handled as a special case and uploaded
-        # directly to Cloud storage
-        if self.server_info.get("s3_direct_uploads_enabled", False) \
-                and entity_type == "Version" and field_name == "sg_uploaded_movie":
+        # Supported types can be directly uploaded to Cloud storage
+        if self._requires_direct_s3_upload(entity_type, field_name):
             return self._upload_to_storage(entity_type, entity_id, path, field_name, display_name,
                                            tag_list, is_thumbnail)
         else:
@@ -2345,10 +2380,27 @@ class Shotgun(object):
 
         params.update(self._auth_params())
 
+        # If we ended up with a unicode string path, we need to encode it
+        # as a utf-8 string. If we don't, there's a chance that there will
+        # will be an attempt later on to encode it as an ascii string, and
+        # that will fail ungracefully if the path contains any non-ascii
+        # characters.
+        #
+        # On Windows, if the path contains non-ascii characters, the calls
+        # to open later in this method will fail to find the file if given
+        # a non-ascii-encoded string path. In that case, we're going to have
+        # to call open on the unicode path, but we'll use the encoded string
+        # for everything else.
+        path_to_open = path
+        if isinstance(path, unicode):
+            path = path.encode("utf-8")
+            if sys.platform != "win32":
+                path_to_open = path
+
         if is_thumbnail:
             url = urlparse.urlunparse((self.config.scheme, self.config.server,
                 "/upload/publish_thumbnail", None, None, None))
-            params["thumb_image"] = open(path, "rb")
+            params["thumb_image"] = open(path_to_open, "rb")
             if field_name == "filmstrip_thumb_image" or field_name == "filmstrip_image":
                 params["filmstrip"] = True
 
@@ -2365,7 +2417,7 @@ class Shotgun(object):
             if tag_list:
                 params["tag_list"] = tag_list
 
-            params["file"] = open(path, "rb")
+            params["file"] = open(path_to_open, "rb")
 
         result = self._send_form(url, params)
 
@@ -2512,6 +2564,13 @@ class Shotgun(object):
                             match = re.search('<Message>(.*)</Message>', xml)
                             if match:
                                 err += ' - %s' % (match.group(1))
+                elif e.code == 409 or e.code == 410:
+                    # we may be dealing with a file that is pending/failed a malware scan, e.g:
+                    # 409: This file is undergoing a malware scan, please try again in a few minutes
+                    # 410: File scanning has detected malware and the file has been quarantined
+                    lines = e.readlines()
+                    if lines:
+                        err += "\n%s\n" % ''.join(lines)
             raise ShotgunFileDownloadError(err)
         else:
             if file_path:
@@ -3011,15 +3070,41 @@ class Shotgun(object):
 
         return session_token
 
+    def preferences_read(self, prefs=None):
+        """
+        Get a subset of the site preferences.
+
+        >>> sg.preferences_read()
+        {
+            "pref_name": "pref value"
+        }
+
+        :param list prefs: An optional list of preference names to return.
+        :returns: Dictionary of preferences and their values.
+        :rtype: dict
+        """
+        if self.server_caps.version and self.server_caps.version < (7, 10, 0):
+                raise ShotgunError("preferences_read requires server version 7.10.0 or "\
+                    "higher, server is %s" % (self.server_caps.version,))
+
+        prefs = prefs or []
+
+        return self._call_rpc("preferences_read", { "prefs": prefs })
+
     def _build_opener(self, handler):
         """
         Build urllib2 opener with appropriate proxy handler.
         """
+        handlers = []
+        if self.__ca_certs and not NO_SSL_VALIDATION:
+            handlers.append(CACertsHTTPSHandler(self.__ca_certs))
+
         if self.config.proxy_handler:
-            opener = urllib2.build_opener(self.config.proxy_handler, handler)
-        else:
-            opener = urllib2.build_opener(handler)
-        return opener
+            handlers.append(self.config.proxy_handler)
+
+        if handler is not None:
+            handlers.append(handler)
+        return urllib2.build_opener(*handlers)
 
     def _turn_off_ssl_validation(self):
         """
@@ -3360,6 +3445,7 @@ class Shotgun(object):
         ERR_AUTH = 102 # error code for authentication related problems
         ERR_2FA  = 106 # error code when 2FA authentication is required but no 2FA token provided.
         ERR_SSO  = 108 # error code when SSO is activated on the site, preventing the use of username/password for authentication.
+        ERR_OXYG = 110 # error code when Oxygen is activated on the site, preventing the use of username/password for authentication.
 
         if isinstance(sg_response, dict) and sg_response.get("exception"):
             if sg_response.get("error_code") == ERR_AUTH:
@@ -3368,7 +3454,11 @@ class Shotgun(object):
                 raise MissingTwoFactorAuthenticationFault(sg_response.get("message", "Unknown 2FA Authentication Error"))
             elif sg_response.get("error_code") == ERR_SSO:
                 raise UserCredentialsNotAllowedForSSOAuthenticationFault(
-                    sg_response.get("message", "Authentication using username/password is not supported for an SSO-enabled Shotgun site")
+                    sg_response.get("message", "Authentication using username/password is not allowed for an SSO-enabled Shotgun site")
+                )
+            elif sg_response.get("error_code") == ERR_OXYG:
+                raise UserCredentialsNotAllowedForOxygenAuthenticationFault(
+                    sg_response.get("message", "Authentication using username/password is not allowed for an Autodesk Identity enabled Shotgun site")
                 )
             else:
                 # raise general Fault
@@ -3721,7 +3811,7 @@ class Shotgun(object):
         :rtype: str
         """
         try:
-            opener = urllib2.build_opener(urllib2.HTTPHandler)
+            opener = self._build_opener(urllib2.HTTPHandler)
 
             request = urllib2.Request(storage_url, data=data)
             request.add_header("Content-Type", content_type)
@@ -3763,6 +3853,47 @@ class Shotgun(object):
         if not str(result).startswith("1"):
             raise ShotgunError("Unable get upload part link: %s" % result)
 
+    def _requires_direct_s3_upload(self, entity_type, field_name):
+        """
+        Internal function that determines if an entity_type + field_name combination
+        should be uploaded to cloud storage.
+
+        The info endpoint should return `s3_enabled_upload_types` which contains an object like the following:
+            {
+                'Version': ['sg_uploaded_movie'],
+                'Attachment': '*',
+                '*': ['this_file']
+            }
+
+        :param str entity_type: The entity type of the file being uploaded.
+        :param str field_name: The matching field name for the file being uploaded.
+
+        :returns: Whether the field + entity type combination should be uploaded to cloud storage.
+        :rtype: bool
+        """
+        supported_s3_types = self.server_info.get('s3_enabled_upload_types') or {}
+        supported_fields = supported_s3_types.get(entity_type) or []
+        supported_star_fields = supported_s3_types.get("*") or []
+        # If direct uploads are enabled
+        if self.server_info.get("s3_direct_uploads_enabled", False):
+            # If field_name is part of a supported entity_type
+            if field_name in supported_fields or field_name in supported_star_fields:
+                return True
+            # If supported_fields is a string or a list with *
+            if isinstance(supported_fields, list) and "*" in supported_fields:
+                return True
+            elif supported_fields == "*":
+                return True
+            # If supported_star_fields is a list containing * or * as a string
+            if isinstance(supported_star_fields, list) and "*" in supported_star_fields:
+                return True
+            elif supported_star_fields == "*":
+                return True
+            # Support direct upload for old versions of shotgun
+            return entity_type == "Version" and field_name == "sg_uploaded_movie"
+        else:
+            return False
+
     def _send_form(self, url, params):
         """
         Utility function to send a Form to Shotgun and process any HTTP errors that
@@ -3791,8 +3922,52 @@ class Shotgun(object):
 
         return result
 
-# Helpers from the previous API, left as is.
 
+class CACertsHTTPSConnection(httplib.HTTPConnection):
+    """"
+    This class allows to create an HTTPS connection that uses the custom certificates
+    passed in.
+    """
+
+    default_port = httplib.HTTPS_PORT
+
+    def __init__(self, *args, **kwargs):
+        """
+        :param args: Positional arguments passed down to the base class.
+        :param ca_certs: Path to the custom CA certs file.
+        :param kwargs: Keyword arguments passed down to the bas class
+        """
+        # Pop that argument,
+        self.__ca_certs = kwargs.pop("ca_certs")
+        httplib.HTTPConnection.__init__(self, *args, **kwargs)
+
+    def connect(self):
+        "Connect to a host on a given (SSL) port."
+        httplib.HTTPConnection.connect(self)
+        # Now that the regular HTTP socket has been created, wrap it with our SSL certs.
+        self.sock = ssl.wrap_socket(
+            self.sock,
+            ca_certs=self.__ca_certs,
+            cert_reqs=ssl.CERT_REQUIRED
+        )
+
+
+class CACertsHTTPSHandler(urllib2.HTTPSHandler):
+    """
+    Handler that ensures https connections are created with the custom CA certs.
+    """
+    def __init__(self, cacerts):
+        urllib2.HTTPSHandler.__init__(self)
+        self.__ca_certs = cacerts
+
+    def https_open(self, req):
+        return self.do_open(self.create_https_connection, req)
+
+    def create_https_connection(self, *args, **kwargs):
+        return CACertsHTTPSConnection(*args, ca_certs=self.__ca_certs, **kwargs)
+
+
+# Helpers from the previous API, left as is.
 # Based on http://code.activestate.com/recipes/146306/
 class FormPostHandler(urllib2.BaseHandler):
     """
@@ -3829,7 +4004,15 @@ class FormPostHandler(urllib2.BaseHandler):
             buffer.write('Content-Disposition: form-data; name="%s"' % key)
             buffer.write('\r\n\r\n%s\r\n' % value)
         for (key, fd) in files:
-            filename = fd.name.split('/')[-1]
+            # On Windows, it's possible that we were forced to open a file
+            # with non-ascii characters as unicode. In that case, we need to
+            # encode it as a utf-8 string to remove unicode from the equation.
+            # If we don't, the mix of unicode and strings going into the
+            # buffer can cause UnicodeEncodeErrors to be raised.
+            filename = fd.name
+            if isinstance(filename, unicode):
+                filename = filename.encode("utf-8")
+            filename = filename.split('/')[-1]
             content_type = mimetypes.guess_type(filename)[0]
             content_type = content_type or 'application/octet-stream'
             file_size = os.fstat(fd.fileno())[stat.ST_SIZE]

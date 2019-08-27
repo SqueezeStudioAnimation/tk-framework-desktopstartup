@@ -17,16 +17,22 @@ not be called directly. Interfaces and implementation of this module may change
 at any point.
 --------------------------------------------------------------------------------
 """
-
+from tank_vendor import shotgun_api3
+from .web_login_support import get_shotgun_authenticator_support_web_login
 from .ui import resources_rc # noqa
 from .ui import login_dialog
 from . import session_cache
 from ..util.shotgun import connection
 from ..util import login
-from .shotgun_shared import Saml2Sso, is_sso_enabled_on_site, Saml2SsoMissingQtModuleError
 from .errors import AuthenticationError
 from .ui.qt_abstraction import QtGui, QtCore, QtNetwork, QtWebKit
-from tank_vendor.shotgun_api3 import MissingTwoFactorAuthenticationFault
+from .sso_saml2 import (
+    SsoSaml2Toolkit,
+    SsoSaml2MissingQtModuleError,
+    is_autodesk_identity_enabled_on_site,
+    is_sso_enabled_on_site,
+    is_unified_login_flow_enabled_on_site,
+)
 from .. import LogManager
 
 logger = LogManager.get_logger(__name__)
@@ -51,22 +57,30 @@ class QuerySiteAndUpdateUITask(QtCore.QThread):
     to avoid blocking the main GUI thread.
     """
 
-    def __init__(self, parent):
+    def __init__(self, parent, http_proxy=None):
         """
         Constructor.
         """
         QtCore.QThread.__init__(self, parent)
         self._url_to_test = ""
         self._sso_enabled = False
+        self._unified_login_flow_enabled = False
+        self._http_proxy = http_proxy
 
     @property
     def sso_enabled(self):
-        """Bool R/W property."""
+        """returns: `True` if SSO is enabled, `False` otherwise."""
         return self._sso_enabled
 
-    @sso_enabled.setter
-    def sso_enabled(self, value):
-        self._sso_enabled = value
+    @property
+    def autodesk_identity_enabled(self):
+        """returns: `True` if Identity is enabled, `False` otherwise."""
+        return self._autodesk_identity_enabled
+
+    @property
+    def unified_login_flow_enabled(self):
+        """returns: `True` if ULF is enabled, `False` otherwise."""
+        return self._unified_login_flow_enabled
 
     @property
     def url_to_test(self):
@@ -81,7 +95,11 @@ class QuerySiteAndUpdateUITask(QtCore.QThread):
         """
         Runs the thread.
         """
-        self.sso_enabled = is_sso_enabled_on_site(self.url_to_test)
+        # The site information is cached, so those three calls do not add
+        # any significant overhead.
+        self._sso_enabled = is_sso_enabled_on_site(self.url_to_test, self._http_proxy)
+        self._autodesk_identity_enabled = is_autodesk_identity_enabled_on_site(self.url_to_test, self._http_proxy)
+        self._unified_login_flow_enabled = is_unified_login_flow_enabled_on_site(self.url_to_test, self._http_proxy)
 
 
 class LoginDialog(QtGui.QDialog):
@@ -118,17 +136,17 @@ class LoginDialog(QtGui.QDialog):
             "QtWebKit": QtWebKit,
         }
         try:
-            self._saml2_sso = Saml2Sso("SSO Login", qt_modules=qt_modules)
-        except Saml2SsoMissingQtModuleError as e:
-            logger.error("SSO login not supported due to missing Qt module: %s" % e)
-            self._saml2_sso = None
+            self._sso_saml2 = SsoSaml2Toolkit("Web Login", qt_modules=qt_modules)
+        except SsoSaml2MissingQtModuleError as e:
+            logger.info("Web login not supported due to missing Qt module: %s" % e)
+            self._sso_saml2 = None
 
         hostname = hostname or ""
         login = login or ""
 
         self._is_session_renewal = is_session_renewal
         self._session_metadata = session_metadata
-        self._use_sso = False
+        self._use_web = False
 
         # setup the gui
         self.ui = login_dialog.Ui_LoginDialog()
@@ -150,14 +168,14 @@ class LoginDialog(QtGui.QDialog):
         self.ui.site.set_selection(hostname)
 
         # Apply the stylesheet manually, Qt doesn't see it otherwise...
-        COMPLETER_STYLE = self.styleSheet() + (
+        completer_style = self.styleSheet() + (
             "\n\nQWidget {"
             "font-size: 12px;"
             "}"
         )
-        self.ui.site.set_style_sheet(COMPLETER_STYLE)
+        self.ui.site.set_style_sheet(completer_style)
         self.ui.site.set_placeholder_text("example.shotgunstudio.com")
-        self.ui.login.set_style_sheet(COMPLETER_STYLE)
+        self.ui.login.set_style_sheet(completer_style)
         self.ui.login.set_placeholder_text("login")
 
         self._populate_user_dropdown(recent_hosts[0] if recent_hosts else None)
@@ -223,14 +241,21 @@ class LoginDialog(QtGui.QDialog):
         self.ui.site.activated.connect(self._on_site_changed)
         self.ui.site.lineEdit().editingFinished.connect(self._on_site_changed)
 
-        self._query_task = QuerySiteAndUpdateUITask(self)
-        self._query_task.finished.connect(self._toggle_sso)
+        self._query_task = QuerySiteAndUpdateUITask(self, http_proxy)
+        self._query_task.finished.connect(self._toggle_web)
         self._update_ui_according_to_sso_support()
 
         # We want to wait until we know if the site uses SSO or not, to avoid
         # flickering GUI.
         if not self._query_task.wait(THREAD_WAIT_TIMEOUT_MS):
             logger.warning("Timed out awaiting check for SSO support on the site: %s" % self._get_current_site())
+
+    def __del__(self):
+        """
+        Destructor.
+        """
+        # We want to clean up any running qthread.
+        self._query_task.wait()
 
     def _get_current_site(self):
         """
@@ -255,7 +280,7 @@ class LoginDialog(QtGui.QDialog):
         Updates the GUI if SSO is supported or not, hiding or showing the username/password fields.
         """
         # Only update the GUI if we were able to initialize the sam2sso module.
-        if self._saml2_sso:
+        if self._sso_saml2:
             self._query_task.url_to_test = self._get_current_site()
             self._query_task.start()
 
@@ -317,22 +342,33 @@ class LoginDialog(QtGui.QDialog):
                 self.ui.message, "Can't open '%s'." % forgot_password
             )
 
-    def _toggle_sso(self):
+    def _toggle_web(self):
         """
-        Sets up the dialog GUI according to the use of SSO or not.
+        Sets up the dialog GUI according to the use of web login or not.
         """
         # We only update the GUI if there was a change between to mode we
         # are showing and what was detected on the potential target site.
-        if self._use_sso != self._query_task.sso_enabled:
-            self._use_sso = not self._use_sso
-            if self._use_sso:
-                self.ui.message.setText("Sign in using your Single Sign-On (SSO) Account.")
+        use_web = self._query_task.sso_enabled or self._query_task.autodesk_identity_enabled
+
+        # If we have full support for Web-based login, or if we enable it in our
+        # environment, use the Unified Login Flow for all authentication modes.
+        if get_shotgun_authenticator_support_web_login():
+            use_web = use_web or self._query_task.unified_login_flow_enabled
+
+        # if we are switching from one mode (using the web) to another (not using
+        # the web), or vice-versa, we need to update the GUI.
+        # In web-based authentication, the web form is in charge of obtaining
+        # and validating the user credentials.
+        if self._use_web != use_web:
+            self._use_web = not self._use_web
+            if self._use_web:
+                self.ui.message.setText("Sign in using the Web.")
                 self.ui.site.setFocus(QtCore.Qt.OtherFocusReason)
             else:
                 self.ui.message.setText("Please enter your credentials.")
 
-            self.ui.login.setVisible(not self._use_sso)
-            self.ui.password.setVisible(not self._use_sso)
+            self.ui.login.setVisible(not self._use_web)
+            self.ui.password.setVisible(not self._use_web)
 
     def _current_page_changed(self, index):
         """
@@ -365,7 +401,16 @@ class LoginDialog(QtGui.QDialog):
         """
         Displays the window modally.
         """
-        self.show()
+        # This fixes a weird bug on Qt where calling show() and exec_() might lead
+        # to having an invisible modal QDialog and this state freezes the host
+        # application. (Require a `pkill -9 applicationName`). The fix in our case
+        # is pretty simple, we just have to not call show() before the call to
+        # exec_() since it implicitly call exec_().
+        #
+        # This bug is described here: https://bugreports.qt.io/browse/QTBUG-48248
+        if QtCore.__version__.startswith("4."):
+            self.show()
+
         self.raise_()
         self.activateWindow()
 
@@ -383,23 +428,25 @@ class LoginDialog(QtGui.QDialog):
         :returns: A tuple of (hostname, username and session token) string if the user authenticated
                   None if the user cancelled.
         """
-        if self._session_metadata and self._saml2_sso:
-            res = self._saml2_sso.on_sso_login_attempt({
-                "host": self._get_current_site(),
-                "cookies": self._session_metadata,
-                "product": PRODUCT_IDENTIFIER
-            }, use_watchdog=True)
+        if self._session_metadata and self._sso_saml2:
+            res = self._sso_saml2.login_attempt(
+                host=self._get_current_site(),
+                http_proxy=self._http_proxy,
+                cookies=self._session_metadata,
+                product=PRODUCT_IDENTIFIER,
+                use_watchdog=True
+            )
             # If the offscreen session renewal failed, show the GUI as a failsafe
             if res == QtGui.QDialog.Accepted:
-                return self._saml2_sso.get_session_data()
+                return self._sso_saml2.get_session_data()
             else:
                 return None
 
         res = self.exec_()
 
         if res == QtGui.QDialog.Accepted:
-            if self._session_metadata and self._saml2_sso:
-                return self._saml2_sso.get_session_data()
+            if self._session_metadata and self._sso_saml2:
+                return self._sso_saml2.get_session_data()
             return (self._get_current_site(),
                     self._get_current_user(),
                     self._new_session_token,
@@ -439,11 +486,11 @@ class LoginDialog(QtGui.QDialog):
             return
 
         # Cleanup the URL and update the GUI.
-        if self._use_sso and site.startswith("http://"):
+        if self._use_web and site.startswith("http://"):
             site = "https" + site[4:]
         self.ui.site.setEditText(site)
 
-        if not self._use_sso:
+        if not self._use_web:
             if len(login) == 0:
                 self._set_error_message(self.ui.message, "Please enter your login name.")
                 self.ui.login.setFocus(QtCore.Qt.OtherFocusReason)
@@ -455,7 +502,7 @@ class LoginDialog(QtGui.QDialog):
 
         try:
             self._authenticate(self.ui.message, site, login, password)
-        except MissingTwoFactorAuthenticationFault:
+        except shotgun_api3.MissingTwoFactorAuthenticationFault:
             # We need a two factor authentication code, move to the next page.
             self.ui.stackedWidget.setCurrentWidget(self.ui._2fa_page)
         except Exception as e:
@@ -471,22 +518,23 @@ class LoginDialog(QtGui.QDialog):
         :param password: Password to use with the login.
         :param auth_code: Optional two factor authentication code.
 
-        :raises MissingTwoFactorAuthenticationFault: Raised if auth_code was None but was required
+        :raises shotgun_api3.MissingTwoFactorAuthenticationFault: Raised if auth_code was None but was required
             by the server.
         """
         success = False
         try:
-            if self._use_sso and self._saml2_sso:
-                res = self._saml2_sso.on_sso_login_attempt({
-                    "host": site,
-                    "cookies": self._session_metadata,
-                    "product": PRODUCT_IDENTIFIER
-                })
+            if self._use_web and self._sso_saml2:
+                res = self._sso_saml2.login_attempt(
+                    host=site,
+                    http_proxy=self._http_proxy,
+                    cookies=self._session_metadata,
+                    product=PRODUCT_IDENTIFIER
+                )
                 if res == QtGui.QDialog.Accepted:
-                    self._new_session_token = self._saml2_sso._session.session_id
-                    self._session_metadata = self._saml2_sso._session.cookies
+                    self._new_session_token = self._sso_saml2.session_id
+                    self._session_metadata = self._sso_saml2.cookies
                 else:
-                    error_msg = self._saml2_sso.get_session_error()
+                    error_msg = self._sso_saml2.session_error
                     if error_msg:
                         raise AuthenticationError(error_msg)
                     return

@@ -11,6 +11,7 @@
 import copy
 
 from ..errors import TankDescriptorError
+from .base import IODescriptorBase
 
 from ... import LogManager
 log = LogManager.get_logger(__name__)
@@ -92,30 +93,32 @@ def create_io_descriptor(
         # make sure to add an artificial one so that we can resolve it.
         descriptor_dict["version"] = "latest"
 
-    # factory logic
+    # instantiate the Descriptor
+    # descriptor = IODescriptorBase.create(descriptor_type, descriptor_dict, sg)
+
     if descriptor_dict.get("type") == "app_store":
         descriptor = IODescriptorAppStore(descriptor_dict, sg, descriptor_type)
 
     elif descriptor_dict.get("type") == "shotgun":
-        descriptor = IODescriptorShotgunEntity(descriptor_dict, sg)
+        descriptor = IODescriptorShotgunEntity(descriptor_dict, sg, descriptor_type)
 
     elif descriptor_dict.get("type") == "manual":
-        descriptor = IODescriptorManual(descriptor_dict, descriptor_type)
+        descriptor = IODescriptorManual(descriptor_dict, sg, descriptor_type)
 
     elif descriptor_dict.get("type") == "git":
-        descriptor = IODescriptorGitTag(descriptor_dict, descriptor_type)
+        descriptor = IODescriptorGitTag(descriptor_dict, sg, descriptor_type)
 
     elif descriptor_dict.get("type") == "git_branch":
-        descriptor = IODescriptorGitBranch(descriptor_dict)
+        descriptor = IODescriptorGitBranch(descriptor_dict, sg, descriptor_type)
 
     elif descriptor_dict.get("type") == "dev":
-        descriptor = IODescriptorDev(descriptor_dict)
+        descriptor = IODescriptorDev(descriptor_dict, sg, descriptor_type)
 
     elif descriptor_dict.get("type") == "path":
-        descriptor = IODescriptorPath(descriptor_dict)
+        descriptor = IODescriptorPath(descriptor_dict, sg, descriptor_type)
     
     elif descriptor_dict.get("type") == "rez":
-        descriptor = IODescriptorRez(descriptor_dict)
+        descriptor = IODescriptorRez(descriptor_dict, sg, descriptor_type)
 
     else:
         raise TankDescriptorError("Unknown descriptor type for '%s'" % descriptor_dict)
@@ -157,8 +160,6 @@ def create_io_descriptor(
                     "Could not get latest version of %s. "
                     "For more details, see the log." % descriptor
                 )
-
-
 
     return descriptor
 
@@ -223,7 +224,6 @@ def descriptor_uri_to_dict(uri):
     :param uri: descriptor string uri
     :returns: descriptor dictionary
     """
-    from .base import IODescriptorBase
     return IODescriptorBase.dict_from_uri(uri)
 
 
@@ -234,5 +234,4 @@ def descriptor_dict_to_uri(ddict):
     :param ddict: descriptor dictionary
     :returns: descriptor uri
     """
-    from .base import IODescriptorBase
     return IODescriptorBase.uri_from_dict(ddict)

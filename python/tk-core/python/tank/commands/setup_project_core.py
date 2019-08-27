@@ -14,6 +14,7 @@ import shutil
 
 from . import constants
 from ..errors import TankError
+from ..util import StorageRoots
 from ..util import filesystem
 from ..api import sgtk_from_path
 
@@ -23,6 +24,7 @@ from tank_vendor import yaml
 def run_project_setup(log, sg, setup_params):
     """
     Execute the project setup.
+
     No validation is happening at this point - ensure that you have run the necessary validation
     methods in the parameters object.
 
@@ -33,11 +35,7 @@ def run_project_setup(log, sg, setup_params):
     log.info("")
     log.info("Starting project setup.")
 
-    # get the location of the configuration
-    config_location_curr_os = setup_params.get_configuration_location(sys.platform)
-    config_location_mac = setup_params.get_configuration_location("darwin")
-    config_location_linux = setup_params.get_configuration_location("linux2")
-    config_location_win = setup_params.get_configuration_location("win32")
+    # validate existing data
 
     # project id
     project_id = setup_params.get_project_id()
@@ -73,6 +71,74 @@ def run_project_setup(log, sg, setup_params):
                 if x["linux_path"] or x["windows_path"] or x["mac_path"]:
                     raise TankError("Cannot set up this project! Non-auto-path style pipeline "
                                     "configuration entries already exist in Shotgun.")
+
+    if setup_params.get_distribution_mode() == setup_params.CENTRALIZED_CONFIG:
+        _run_centralized_project_setup(log, sg, setup_params)
+    else:
+        _run_distributed_project_setup(log, sg, setup_params)
+
+    log.info("")
+    log.info("Your Toolkit Project has been fully set up.")
+    log.info("")
+
+
+def _run_distributed_project_setup(log, sg, setup_params):
+    """
+    Performs a distributed project setup for the given parameters.
+
+    :param log: python logger object
+    :param sg: shotgun api connection to the associated site
+    :param setup_params: Parameters object which holds gathered project settings
+    """
+    if setup_params.get_auto_path_mode():
+        raise TankError("Auto path mode cannot be used with distributed setups.")
+
+    # Create Project.tank_name and PipelineConfiguration records in Shotgun
+    setup_params.report_progress_from_installer("Registering in Shotgun...")
+
+    project_id = setup_params.get_project_id()
+    if project_id:
+        sg_project_link = {"id": project_id, "type": "Project"}
+    else:
+        sg_project_link = None
+
+    if project_id:
+        log.info("Registering Toolkit project with Shotgun Project...")
+        project_name = setup_params.get_project_disk_name()
+        log.debug("Shotgun: Setting Project.tank_name to %s" % project_name)
+        sg.update("Project", project_id, {"tank_name": project_name})
+
+    log.info("Creating Pipeline Configuration in Shotgun...")
+    data = {
+        "project": sg_project_link,
+        "plugin_ids": constants.DEFAULT_PLUGIN_ID,
+        "code": constants.PRIMARY_PIPELINE_CONFIG_NAME
+    }
+
+    # create pipeline configuration record
+    pc_entity = sg.create(constants.PIPELINE_CONFIGURATION_ENTITY, data)
+    pipeline_config_id = pc_entity["id"]
+    log.debug("Created data: %s" % pc_entity)
+
+    # now upload configuration
+    setup_params.report_progress_from_installer("Uploading configuration...")
+    log.info("Uploading configuration to Shotgun...")
+    setup_params.upload_configuration(pipeline_config_id)
+
+
+def _run_centralized_project_setup(log, sg, setup_params):
+    """
+    Performs a centralized project setup for the given parameters.
+
+    :param log: python logger object
+    :param sg: shotgun api connection to the associated site
+    :param setup_params: Parameters object which holds gathered project settings
+    """
+    # get the location of the configuration
+    config_location_curr_os = setup_params.get_configuration_location(sys.platform)
+    config_location_mac = setup_params.get_configuration_location("darwin")
+    config_location_linux = setup_params.get_configuration_location("linux2")
+    config_location_win = setup_params.get_configuration_location("win32")
 
     # first do disk structure setup, this is most likely to fail.
     setup_params.report_progress_from_installer("Creating main folder structure...")
@@ -157,58 +223,44 @@ def run_project_setup(log, sg, setup_params):
     fh.write("# End of file.\n")
     fh.close()
 
-    # update the roots.yml file in the config to match our settings
-    # reshuffle list of associated local storages to be a dict keyed by storage name
-    # and with keys mac_path/windows_path/linux_path
-
-    log.debug("Writing %s..." % constants.STORAGE_ROOTS_FILE)
-    roots_path = os.path.join(config_location_curr_os, "config", "core", constants.STORAGE_ROOTS_FILE)
-
+    # write the roots.yml file in the config to match our settings
     roots_data = {}
+    default_storage_name = setup_params.default_storage_name
     for storage_name in setup_params.get_required_storages():
 
-        roots_data[storage_name] = {"windows_path": setup_params.get_storage_path(storage_name, "win32"),
-                                    "linux_path": setup_params.get_storage_path(storage_name, "linux2"),
-                                    "mac_path": setup_params.get_storage_path(storage_name, "darwin")}
+        roots_data[storage_name] = {
+            "windows_path": setup_params.get_storage_path(storage_name, "win32"),
+            "linux_path": setup_params.get_storage_path(storage_name, "linux2"),
+            "mac_path": setup_params.get_storage_path(storage_name, "darwin")
+        }
 
-    try:
-        fh = open(roots_path, "wt")
-        # using safe_dump instead of dump ensures that we
-        # don't serialize any non-std yaml content. In particular,
-        # this causes issues if a unicode object containing a 7-bit
-        # ascii string is passed as part of the data. in this case,
-        # dump will write out a special format which is later on
-        # *loaded in* as a unicode object, even if the content doesn't
-        # need unicode handling. And this causes issues down the line
-        # in toolkit code, assuming strings:
-        #
-        # >>> yaml.dump({"foo": u"bar"})
-        # "{foo: !!python/unicode 'bar'}\n"
-        # >>> yaml.safe_dump({"foo": u"bar"})
-        # '{foo: bar}\n'
-        #
-        yaml.safe_dump(roots_data, fh)
-        fh.close()
-    except Exception as exp:
-        raise TankError("Could not write to roots file %s. "
-                        "Error reported: %s" % (roots_path, exp))
+        # if this is the default storage, ensure it is explicitly marked in the
+        # roots file
+        if default_storage_name and storage_name == default_storage_name:
+            roots_data[storage_name]["default"] = True
 
-    # now ensure there is a tank folder in every storage
-    setup_params.report_progress_from_installer("Setting up project storage folders...")
-    for storage_name in setup_params.get_required_storages():
+        # if there is a SG local storage associated with this root, make sure
+        # it is explicit in the the roots file. this allows roots to exist that
+        # are not named the same as the storage in SG
+        sg_storage_id = setup_params.get_storage_shotgun_id(storage_name)
+        if sg_storage_id is not None:
+            roots_data[storage_name]["shotgun_storage_id"] = sg_storage_id
 
-        log.info("Setting up %s storage..." % storage_name )
-
-        # get the project path for this storage
-        current_os_path = setup_params.get_project_path(storage_name, sys.platform)
-        log.debug("Project path: %s" % current_os_path )
-
+    storage_roots = StorageRoots.from_metadata(roots_data)
+    config_folder = os.path.join(config_location_curr_os, "config")
+    storage_roots.write(sg, config_folder, storage_roots)
 
     # Create Project.tank_name and PipelineConfiguration records in Shotgun
     #
     # This logic has some special complexity when the auto_path mode is in use.
 
     setup_params.report_progress_from_installer("Registering in Shotgun...")
+
+    project_id = setup_params.get_project_id()
+    if project_id:
+        sg_project_link = {"id": project_id, "type": "Project"}
+    else:
+        sg_project_link = None
 
     if setup_params.get_auto_path_mode():
         # first, check the project name. If there is no project name in Shotgun, populate it
@@ -405,10 +457,6 @@ def run_project_setup(log, sg, setup_params):
             log.info("Post install phase complete!")
         finally:
             sys.path.pop(0)
-
-    log.info("")
-    log.info("Your Toolkit Project has been fully set up.")
-    log.info("")
 
 def _get_published_file_entity_type(log, sg):
     """
