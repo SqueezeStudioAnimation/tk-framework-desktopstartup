@@ -54,14 +54,13 @@ class IODescriptorRez(IODescriptorBase):
         self._validate_descriptor(
             descriptor_dict,
             required=["type", "name"],
-            optional=["version"]
+            optional=["version", "no_local_packages"]
         )
 
         self._name = descriptor_dict["name"]
-
-        
         self._version = descriptor_dict.get("version")
-        
+        self._no_local_packages = descriptor_dict.get("no_local_packages", False)
+
         if self._version:
             # Shotgun expect version number to be prefixed with "v".
             # REZ don't, we'll support both but never pass the letter to rez.
@@ -71,14 +70,22 @@ class IODescriptorRez(IODescriptorBase):
         self._path = self._get_rez_pkg_location()
 
     def _get_rez_pkg_location(self):
-        
+
         request = "{0}-{1}".format(self._name, self._version) if self._version is not None else self._name
         log.debug("Resolved rez request is: {0}".format(request))
-        
+
         if sys.platform == "win32":
-            cmd = 'rez-env {pkg} -- echo %REZ_{NAME}_ROOT%'.format(pkg=request, NAME=self._name.upper())
+            cmd = ('rez-env {no_local_packages} {pkg} -- '
+                   'echo %REZ_{NAME}_ROOT%'.format(
+                no_local_packages=self._no_local_packages,
+                pkg=request,
+                NAME=self._name.upper()))
         else:
-            cmd = 'rez-env {pkg} -- printenv REZ_{NAME}_ROOT'.format(pkg=request, NAME=self._name.upper())
+            cmd = ('rez-env {no_local_packages} {pkg} -- '
+                   'printenv REZ_{NAME}_ROOT'.format(
+                no_local_packages=self._no_local_packages,
+                pkg=request,
+                NAME=self._name.upper()))
             
         log.debug("Executing command: {0}".format(cmd))
         process = subprocess.Popen(cmd, stdout=subprocess.PIPE, shell=True)

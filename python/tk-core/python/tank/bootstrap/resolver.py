@@ -58,6 +58,7 @@ class ConfigurationResolver(object):
         "sg_uploaded_config",
         "sg_installed_config_descriptor",  # added by Squeeze,
         "project.Project.tank_name",  # added by Squeeze,
+        "sg_no_local_packages", # added by Squeeze
     ]
 
     def __init__(
@@ -366,6 +367,9 @@ class ConfigurationResolver(object):
 
         path = ShotgunPath.from_shotgun_dict(shotgun_pc_data)
         sg_descriptor_uri = shotgun_pc_data.get("descriptor") or shotgun_pc_data.get("sg_descriptor")
+        if shotgun_pc_data.get('no_local_packages'):
+            if 'no_local_packages' not in sg_descriptor_uri:
+                sg_descriptor_uri += '&no_local_packages=True'
         sg_uploaded_config = shotgun_pc_data.get("uploaded_config") or shotgun_pc_data.get("sg_uploaded_config")
         sg_installed_config_descriptor = shotgun_pc_data.get("sg_installed_config_descriptor")
 
