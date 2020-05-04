@@ -54,7 +54,7 @@ class IODescriptorRez(IODescriptorBase):
         self._validate_descriptor(
             descriptor_dict,
             required=["type", "name"],
-            optional=["version"]
+            optional=["version", "relative_path"]
         )
 
         self._name = descriptor_dict["name"]
@@ -69,6 +69,35 @@ class IODescriptorRez(IODescriptorBase):
 
         # Resolve location
         self._path = self._get_rez_pkg_location()
+
+        # Are we asked for a more precise path?
+        # if so, relative_path needs to be joined to the resolved path
+        self._relative_path = descriptor_dict.get("relative_path")
+        if self._relative_path:
+            self._path = os.path.join(self._path, self._relative_path)
+            self._path = os.path.normpath(self._path)
+
+
+    def _exists_local(self, path):
+        """
+        When the relative_path argument is set, it means the descriptor could
+        be pointing to a file.
+
+        The base class assumes the descriptor points to a directory. This is why
+        we are overriding this method
+        """
+        if not self._relative_path:
+            # Use the base method in that case
+            return super(IODescriptorRez,self)._exists_local(path)
+
+        if path is None:
+            return False
+
+        # check that the path exists locally
+        if not os.path.exists(path):
+            return False
+
+        return True
 
     def _get_rez_pkg_location(self):
         

@@ -181,7 +181,7 @@ class PipelineConfiguration(object):
         if isinstance(descriptor_dict, basestring):
             descriptor_uri = os.path.expandvars(descriptor_dict)
             new_descriptor_dict = descriptor_uri_to_dict(descriptor_uri)
-            log.info("[Squeeze] Exanded {0} to {1}".format(descriptor_dict, new_descriptor_dict))
+            log.info("[Squeeze] Expanded {0} to {1}".format(descriptor_dict, new_descriptor_dict))
             descriptor_dict = new_descriptor_dict
 
         # We'll first assume the pipeline configuration is not installed.
