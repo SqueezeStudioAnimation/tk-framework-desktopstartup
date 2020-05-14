@@ -23,7 +23,7 @@ def commands():
 
     # By default, shotgun write it's cache in the home directory.
     # However in Linux, the home are mounted from the nas from result in unecessary io.
-    # Note the user of the $USER variable. This ensure that each user will have it's own SHOTGUN_HOME.
+    # Note the use of the $USER variable. This ensure that each user will have it's own SHOTGUN_HOME.
     if system.platform == 'linux':
         env.SHOTGUN_HOME = '/var/tmp/shotgun/$USER'
 
