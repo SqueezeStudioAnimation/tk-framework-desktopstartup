@@ -16,6 +16,7 @@ from tank import Hook
 
 
 class BundleInit(Hook):
+
     def execute(self, bundle, **kwargs):
         """
         Executed when the Toolkit bundle is fully initialized.

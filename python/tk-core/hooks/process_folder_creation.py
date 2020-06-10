@@ -17,11 +17,10 @@ from tank import Hook
 import os
 import sys
 import shutil
-from tank_vendor import six
-from tank.util import is_windows
 
 
 class ProcessFolderCreation(Hook):
+
     def execute(self, items, preview_mode, **kwargs):
         """
         Creates a list of files and folders.
@@ -119,7 +118,7 @@ class ProcessFolderCreation(Hook):
                     if not os.path.exists(path):
                         if not preview_mode:
                             # create the folder using open permissions
-                            os.makedirs(path, 0o777)
+                            os.makedirs(path, 0777)
                         locations.append(path)
 
                 elif action == "remote_entity_folder":
@@ -150,7 +149,7 @@ class ProcessFolderCreation(Hook):
 
                 elif action == "symlink":
                     # symbolic link
-                    if is_windows():
+                    if sys.platform == "win32":
                         # no windows support
                         continue
                     path = i.get("path")
@@ -171,7 +170,7 @@ class ProcessFolderCreation(Hook):
                             # do a standard file copy
                             shutil.copy(source_path, target_path)
                             # set permissions to open
-                            os.chmod(target_path, 0o666)
+                            os.chmod(target_path, 0666)
                         locations.append(target_path)
 
                 elif action == "create_file":
@@ -180,15 +179,15 @@ class ProcessFolderCreation(Hook):
                     parent_folder = os.path.dirname(path)
                     content = i.get("content")
                     if not os.path.exists(parent_folder) and not preview_mode:
-                        os.makedirs(parent_folder, 0o777)
+                        os.makedirs(parent_folder, 0777)
                     if not os.path.exists(path):
                         if not preview_mode:
                             # create the file
                             fp = open(path, "wb")
-                            fp.write(six.ensure_binary(content))
+                            fp.write(content)
                             fp.close()
                             # and set permissions to open
-                            os.chmod(path, 0o666)
+                            os.chmod(path, 0666)
                         locations.append(path)
         finally:
             # reset umask

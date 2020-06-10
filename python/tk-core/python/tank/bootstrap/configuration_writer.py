@@ -22,7 +22,6 @@ from ..util import filesystem
 from ..util import StorageRoots
 from ..util.shotgun import connection
 from ..util.move_guard import MoveGuard
-from ..util import is_macos, is_windows
 
 from tank_vendor import yaml
 
@@ -71,15 +70,17 @@ class ConfigurationWriter(object):
 
         # Required for files written to the config like pipeline_confguration.yml,
         # shotgun.yml, etc.
-        filesystem.ensure_folder_exists(os.path.join(config_path, "config", "core"))
+        filesystem.ensure_folder_exists(
+            os.path.join(config_path, "config", "core")
+        )
 
         filesystem.ensure_folder_exists(
             os.path.join(config_path, "install", "config.backup"),
-            create_placeholder_file=True,
+            create_placeholder_file=True
         )
         filesystem.ensure_folder_exists(
             os.path.join(config_path, "install", "core.backup"),
-            create_placeholder_file=True,
+            create_placeholder_file=True
         )
 
     def install_core(self, core_descriptor):
@@ -103,7 +104,11 @@ class ConfigurationWriter(object):
 
         :return: path
         """
-        path = os.path.join(self._path.current_os, "cache", "descriptor_info.yml")
+        path = os.path.join(
+            self._path.current_os,
+            "cache",
+            "descriptor_info.yml"
+        )
         filesystem.ensure_folder_exists(os.path.dirname(path))
         return path
 
@@ -141,9 +146,7 @@ class ConfigurationWriter(object):
 
             if os.path.exists(configuration_payload):
 
-                config_backup_root = os.path.join(
-                    config_path, "install", "config.backup"
-                )
+                config_backup_root = os.path.join(config_path, "install", "config.backup")
 
                 # make sure we have a backup folder present
                 # sometimes, execution and rollback is so quick that several backup folders
@@ -153,21 +156,14 @@ class ConfigurationWriter(object):
                 while os.path.exists(config_backup_path):
                     # that backup path already exists. Try another one
                     counter += 1
-                    config_backup_path = os.path.join(
-                        config_backup_root, "%s.%d" % (timestamp, counter)
-                    )
+                    config_backup_path = os.path.join(config_backup_root, "%s.%d" % (timestamp, counter))
 
                 # now that we have found a spot for our backup, make sure folder exists
                 # and then move the existing config *into* this folder.
                 filesystem.ensure_folder_exists(config_backup_path)
 
-                log.debug(
-                    "Moving config %s -> %s"
-                    % (configuration_payload, config_backup_path)
-                )
-                backup_target_path = os.path.join(
-                    config_backup_path, os.path.basename(configuration_payload)
-                )
+                log.debug("Moving config %s -> %s" % (configuration_payload, config_backup_path))
+                backup_target_path = os.path.join(config_backup_path, os.path.basename(configuration_payload))
                 guard.move(configuration_payload, backup_target_path)
                 log.debug("Backup complete.")
                 config_backup_path = backup_target_path
@@ -188,9 +184,7 @@ class ConfigurationWriter(object):
                 while os.path.exists(core_backup_path):
                     # that backup path already exists. Try another one
                     counter += 1
-                    core_backup_path = os.path.join(
-                        core_backup_root, "%s.%d" % (timestamp, counter)
-                    )
+                    core_backup_path = os.path.join(core_backup_root, "%s.%d" % (timestamp, counter))
 
                 log.debug("Moving core %s -> %s" % (core_payload, core_backup_path))
                 guard.move(core_payload, core_backup_path)
@@ -221,7 +215,7 @@ class ConfigurationWriter(object):
         executables = dict(
             Linux=constants.DESKTOP_PYTHON_LINUX,
             Darwin=constants.DESKTOP_PYTHON_MAC,
-            Windows=constants.DESKTOP_PYTHON_WIN,
+            Windows=constants.DESKTOP_PYTHON_WIN
         )
 
         # FIXME: This is a really bad hack. We're looking to see if we are running inside the
@@ -243,9 +237,9 @@ class ConfigurationWriter(object):
         if os.path.split(executable)[1].lower().startswith("shotgun"):
             log.debug("Shotgun Desktop process detected.")
             # We'll use the builtin Python.
-            if is_macos():
+            if sys.platform == "darwin":
                 current_interpreter = os.path.join(prefix, "bin", "python")
-            elif is_windows():
+            elif sys.platform == "win32":
                 current_interpreter = os.path.join(prefix, "python.exe")
             else:
                 current_interpreter = os.path.join(prefix, "bin", "python")
@@ -257,9 +251,9 @@ class ConfigurationWriter(object):
 
         # Sets the interpreter in the current OS, we'll leave the defaults for the other platforms.
         if current_interpreter:
-            if is_macos():
+            if sys.platform == "darwin":
                 executables["Darwin"] = current_interpreter
-            elif is_windows():
+            elif sys.platform == "win32":
                 executables["Windows"] = current_interpreter
             else:
                 executables["Linux"] = current_interpreter
@@ -267,22 +261,22 @@ class ConfigurationWriter(object):
         if current_interpreter:
             log.debug("Current OS interpreter will be %s.", current_interpreter)
         else:
-            log.debug(
-                "Current OS interpreter will be the default Shotgun Desktop location."
-            )
+            log.debug("Current OS interpreter will be the default Shotgun Desktop location.")
 
         config_root_path = self._path.current_os
 
         # Write out missing files.
         for platform in executables:
             sg_config_location = os.path.join(
-                config_root_path, "config", "core", "interpreter_%s.cfg" % platform
+                config_root_path,
+                "config",
+                "core",
+                "interpreter_%s.cfg" % platform
             )
             # If the interpreter file already existed in the configuration, we won't overwrite it.
             if os.path.exists(sg_config_location):
                 log.debug(
-                    "Interpreter file %s already exists, leaving as is.",
-                    sg_config_location,
+                    "Interpreter file %s already exists, leaving as is.", sg_config_location
                 )
                 continue
             # create new file
@@ -309,7 +303,10 @@ class ConfigurationWriter(object):
 
         # write the install_location file for our new setup
         sg_code_location = os.path.join(
-            config_path, "config", "core", "install_location.yml"
+            config_path,
+            "config",
+            "core",
+            "install_location.yml"
         )
 
         if os.path.exists(sg_code_location):
@@ -360,11 +357,16 @@ class ConfigurationWriter(object):
         """
 
         source_config_sg_file = os.path.join(
-            descriptor.get_path(), "core", constants.CONFIG_SHOTGUN_FILE
+            descriptor.get_path(),
+            "core",
+            constants.CONFIG_SHOTGUN_FILE
         )
 
         dest_config_sg_file = os.path.join(
-            self._path.current_os, "config", "core", constants.CONFIG_SHOTGUN_FILE
+            self._path.current_os,
+            "config",
+            "core",
+            constants.CONFIG_SHOTGUN_FILE
         )
 
         # If there is a shotgun.yml file at the source location, read it
@@ -379,7 +381,7 @@ class ConfigurationWriter(object):
         else:
             log.debug(
                 "File '%s' does not exist in the config. shotgun.yml will only contain the host.",
-                source_config_sg_file,
+                source_config_sg_file
             )
             metadata = {}
 
@@ -400,7 +402,7 @@ class ConfigurationWriter(object):
         project_id,
         plugin_id,
         bundle_cache_fallback_paths,
-        source_descriptor,
+        source_descriptor
     ):
         """
         Writes out the the pipeline configuration file config/core/pipeline_config.yml
@@ -426,7 +428,9 @@ class ConfigurationWriter(object):
             # Look up the project name via the project id
             log.debug("Checking project in Shotgun...")
             sg_data = self._sg_connection.find_one(
-                "Project", [["id", "is", project_id]], ["tank_name"]
+                "Project",
+                [["id", "is", project_id]],
+                ["tank_name"]
             )
 
             # When the given project id cannot be found, raise a meaningful exception.
@@ -448,11 +452,9 @@ class ConfigurationWriter(object):
             sg_data = self._sg_connection.find_one(
                 constants.PIPELINE_CONFIGURATION_ENTITY_TYPE,
                 [["id", "is", pipeline_config_id]],
-                ["code"],
+                ["code"]
             )
-            pipeline_config_name = (
-                sg_data["code"] or constants.UNMANAGED_PIPELINE_CONFIG_NAME
-            )
+            pipeline_config_name = sg_data["code"] or constants.UNMANAGED_PIPELINE_CONFIG_NAME
         elif project_id:
             pipeline_config_name = constants.UNMANAGED_PIPELINE_CONFIG_NAME
         else:
@@ -479,15 +481,17 @@ class ConfigurationWriter(object):
 
         # write pipeline_configuration.yml
         pipeline_config_path = os.path.join(
-            self._path.current_os, "config", "core", constants.PIPELINECONFIG_FILE
+            self._path.current_os,
+            "config",
+            "core",
+            constants.PIPELINECONFIG_FILE
         )
 
         if os.path.exists(pipeline_config_path):
             # warn if this file already exists
             log.warning(
                 "The file 'core/%s' exists in the configuration "
-                "but will be overwritten with an auto generated file."
-                % constants.PIPELINECONFIG_FILE
+                "but will be overwritten with an auto generated file." % constants.PIPELINECONFIG_FILE
             )
 
         with filesystem.auto_created_yml(pipeline_config_path) as fh:
@@ -504,7 +508,9 @@ class ConfigurationWriter(object):
 
         config_folder = os.path.join(self._path.current_os, "config")
         StorageRoots.write(
-            self._sg_connection, config_folder, config_descriptor.storage_roots
+            self._sg_connection,
+            config_folder,
+            config_descriptor.storage_roots
         )
 
     def is_transaction_pending(self):
@@ -518,9 +524,7 @@ class ConfigurationWriter(object):
         """
 
         # Check if the transaction folder exists...
-        is_started = os.path.exists(
-            self._get_state_file_name(self._TRANSACTION_START_FILE)
-        )
+        is_started = os.path.exists(self._get_state_file_name(self._TRANSACTION_START_FILE))
         is_ended = os.path.exists(self._get_state_file_name(self._TRANSACTION_END_FILE))
 
         if is_started and not is_ended:
@@ -577,4 +581,7 @@ class ConfigurationWriter(object):
         """
         :returns: Path to the file which will be used to track configuration validity.
         """
-        return os.path.join(self._get_configuration_transaction_folder(), "done")
+        return os.path.join(
+            self._get_configuration_transaction_folder(),
+            "done"
+        )

@@ -1,20 +1,18 @@
 # Copyright (c) 2013 Shotgun Software Inc.
-#
+# 
 # CONFIDENTIAL AND PROPRIETARY
-#
-# This work is provided "AS IS" and subject to the Shotgun Pipeline Toolkit
+# 
+# This work is provided "AS IS" and subject to the Shotgun Pipeline Toolkit 
 # Source Code License included in this distribution package. See LICENSE.
-# By accessing, using, copying or modifying this work you indicate your
-# agreement to the Shotgun Pipeline Toolkit Source Code License. All rights
+# By accessing, using, copying or modifying this work you indicate your 
+# agreement to the Shotgun Pipeline Toolkit Source Code License. All rights 
 # not expressly granted therein are reserved by Shotgun Software Inc.
 
 """
 Interfaces for prompting the user for input during tank command execution.
 """
 
-from __future__ import print_function
 from .. import LogManager
-from tank_vendor.six.moves import input
 
 
 log = LogManager.get_logger(__name__)
@@ -101,7 +99,7 @@ class RawInputCommandInteraction(CommandInteraction):
         :returns: Information entered by user.
         :rtype: str
         """
-        return input(message)
+        return raw_input(message)
 
     def ask_yn_question(self, message):
         """
@@ -110,11 +108,11 @@ class RawInputCommandInteraction(CommandInteraction):
         :param str message: Message to display
         :returns: True if user selects yes, false if no.
         """
-        answer = input("%s [yn]" % message)
+        answer = raw_input("%s [yn]" % message)
         answer = answer.lower()
         if answer != "n" and answer != "y":
             print("Press y for YES, n for NO")
-            answer = input("%s [yn]" % message)
+            answer = raw_input("%s [yn]" % message)
 
         if answer == "y":
             return True
@@ -136,11 +134,11 @@ class RawInputCommandInteraction(CommandInteraction):
             # auto-press YES
             return True
 
-        answer = input("%s [Yna?]" % message)
+        answer = raw_input("%s [Yna?]" % message)
         answer = answer.lower()
         if answer != "n" and answer != "a" and answer != "y" and answer != "":
             print("Press ENTER or y for YES, n for NO and a for ALWAYS.")
-            answer = input("%s [Yna?]" % message)
+            answer = raw_input("%s [Yna?]" % message)
 
         if answer == "a":
             self._ask_questions = False
@@ -195,3 +193,4 @@ class YesToEverythingInteraction(CommandInteraction):
         :returns: True if user selects yes, false if no.
         """
         return True
+

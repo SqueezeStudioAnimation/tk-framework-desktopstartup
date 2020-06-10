@@ -14,7 +14,6 @@ import posixpath
 import ntpath
 
 from .shotgun_path import ShotgunPath
-from .platforms import is_windows
 from ..errors import TankError
 
 
@@ -37,7 +36,7 @@ def _is_current_platform_abspath(path):
 
     :returns bool: True if absolute for this platform, False otherwise.
     """
-    if is_windows():
+    if sys.platform == "win32":
         # ntpath likes to consider a path starting with / to be absolute,
         # but it is not!
         return ntpath.isabs(path) and not posixpath.isabs(path)
@@ -87,8 +86,9 @@ def resolve_include(file_name, include):
     # make sure that the paths all exist
     if not os.path.exists(path):
         raise TankError(
-            "Include resolve error in '%s': '%s' resolved to '%s' which does not exist!"
-            % (file_name, include, path)
+            "Include resolve error in '%s': '%s' resolved to '%s' which does not exist!" % (
+                file_name, include, path
+            )
         )
 
     return path

@@ -19,7 +19,6 @@ at any point.
 """
 
 from .. import LogManager
-
 logger = LogManager.get_logger(__name__)
 
 
@@ -71,7 +70,6 @@ def create():
         to the invoking thread as if it was the thread that actually executed
         the code.
         """
-
         def __init__(self):
             """
             Constructor.
@@ -96,9 +94,7 @@ def create():
 
             logger.debug("Sending ui request to main thread.")
 
-            QtCore.QMetaObject.invokeMethod(
-                self, "_do_invoke", QtCore.Qt.BlockingQueuedConnection
-            )
+            QtCore.QMetaObject.invokeMethod(self, "_do_invoke", QtCore.Qt.BlockingQueuedConnection)
 
             # If an exception has been thrown, rethrow it.
             if self._exception:

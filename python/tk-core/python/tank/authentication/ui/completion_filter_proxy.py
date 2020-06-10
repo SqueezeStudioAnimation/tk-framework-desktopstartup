@@ -18,7 +18,7 @@ at any point.
 --------------------------------------------------------------------------------
 """
 
-from tank.util import sgre as re
+import re
 
 from .qt_abstraction import QtGui
 

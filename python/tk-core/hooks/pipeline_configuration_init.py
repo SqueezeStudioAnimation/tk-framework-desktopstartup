@@ -16,6 +16,7 @@ from tank import Hook
 
 
 class PipelineConfigurationInit(Hook):
+
     def execute(self, **kwargs):
         """
         Executed when a new PipelineConfiguration instance is initialized.

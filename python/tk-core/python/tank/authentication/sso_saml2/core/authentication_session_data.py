@@ -11,8 +11,6 @@
 Authentication Session abstraction.
 """
 
-# pylint: disable=too-many-instance-attributes
-
 
 class AuthenticationSessionData(object):
     """
@@ -61,7 +59,7 @@ class AuthenticationSessionData(object):
         :returns: A string containing all of the session data.
         """
         params = {}
-        for key, value in vars(self).items():
+        for key, value in vars(self).iteritems():
             if value is not None:
                 params[key] = value
 
@@ -74,7 +72,7 @@ class AuthenticationSessionData(object):
         :param settings: Dictionary of element to merge to the settings.
                          Non-used key/value pairs will be silently discarded.
         """
-        for key, value in settings.items():
+        for key, value in settings.iteritems():
             _key = "_%s" % key
             if _key in vars(self):
                 setattr(self, _key, value)

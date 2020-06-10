@@ -1,4 +1,0 @@
-setup_project_root:
-  linux_path: /mnt/foo
-  mac_path: /mnt/foo
-  windows_path: 'Y:\foo'

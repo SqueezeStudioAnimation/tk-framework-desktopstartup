@@ -23,15 +23,14 @@ logger = LogManager.get_logger(__name__)
 
 
 def create_descriptor(
-    sg_connection,
-    descriptor_type,
-    dict_or_uri,
-    bundle_cache_root_override=None,
-    fallback_roots=None,
-    resolve_latest=False,
-    constraint_pattern=None,
-    local_fallback_when_disconnected=True,
-):
+        sg_connection,
+        descriptor_type,
+        dict_or_uri,
+        bundle_cache_root_override=None,
+        fallback_roots=None,
+        resolve_latest=False,
+        constraint_pattern=None,
+        local_fallback_when_disconnected=True):
     """
     Factory method. Use this when creating descriptor objects.
 
@@ -89,9 +88,7 @@ def create_descriptor(
         filesystem.ensure_folder_exists(bundle_cache_root_override)
     else:
         # expand environment variables
-        bundle_cache_root_override = os.path.expanduser(
-            os.path.expandvars(bundle_cache_root_override)
-        )
+        bundle_cache_root_override = os.path.expanduser(os.path.expandvars(bundle_cache_root_override))
 
     fallback_roots = fallback_roots or []
 
@@ -107,7 +104,7 @@ def create_descriptor(
         fallback_roots,
         resolve_latest,
         constraint_pattern,
-        local_fallback_when_disconnected,
+        local_fallback_when_disconnected
     )
 
     # now create a high level descriptor and bind that with the low level descriptor
@@ -116,7 +113,7 @@ def create_descriptor(
         descriptor_type,
         io_descriptor,
         bundle_cache_root_override,
-        fallback_roots,
+        fallback_roots
     )
 
 
@@ -128,7 +125,7 @@ def _get_default_bundle_cache_root():
     """
     return os.path.join(
         LocalFileStorageManager.get_global_root(LocalFileStorageManager.CACHE),
-        "bundle_cache",
+        "bundle_cache"
     )
 
 
@@ -165,14 +162,7 @@ class Descriptor(object):
         cls._factory[descriptor_type] = subclass
 
     @classmethod
-    def create(
-        cls,
-        sg_connection,
-        descriptor_type,
-        io_descriptor,
-        bundle_cache_root_override,
-        fallback_roots,
-    ):
+    def create(cls, sg_connection, descriptor_type, io_descriptor, bundle_cache_root_override, fallback_roots):
         """
         Factory method used by :meth:`create_descriptor`. This is an internal
         method that should not be called by external code.
@@ -189,13 +179,9 @@ class Descriptor(object):
         :raises: TankDescriptorError
         """
         if descriptor_type not in cls._factory:
-            raise TankDescriptorError(
-                "Unsupported descriptor type %s" % descriptor_type
-            )
+            raise TankDescriptorError("Unsupported descriptor type %s" % descriptor_type)
         class_obj = cls._factory[descriptor_type]
-        return class_obj(
-            sg_connection, io_descriptor, bundle_cache_root_override, fallback_roots
-        )
+        return class_obj(sg_connection, io_descriptor, bundle_cache_root_override, fallback_roots)
 
     def __init__(self, io_descriptor):
         """
@@ -342,11 +328,11 @@ class Descriptor(object):
             return app_icon
         else:
             # return default
-            default_icon = os.path.abspath(
-                os.path.join(
-                    os.path.dirname(__file__), "resources", "default_bundle_256px.png"
-                )
-            )
+            default_icon = os.path.abspath(os.path.join(
+                os.path.dirname(__file__),
+                "resources",
+                "default_bundle_256px.png"
+            ))
             return default_icon
 
     @property
@@ -463,9 +449,7 @@ class Descriptor(object):
         # make a copy of the descriptor
         latest = copy.copy(self)
         # find latest I/O descriptor
-        latest._io_descriptor = self._io_descriptor.get_latest_version(
-            constraint_pattern
-        )
+        latest._io_descriptor = self._io_descriptor.get_latest_version(constraint_pattern)
         return latest
 
     def find_latest_cached_version(self, constraint_pattern=None):

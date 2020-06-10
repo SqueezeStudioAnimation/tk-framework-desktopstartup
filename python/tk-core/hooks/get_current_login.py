@@ -29,10 +29,11 @@ current user.
 
 from tank import Hook
 import os
-from tank.util import is_windows
+import sys
 
 
 class GetCurrentLogin(Hook):
+
     def execute(self, **kwargs):
         """
         Retrieves the login name for the Shotgun user.
@@ -45,13 +46,12 @@ class GetCurrentLogin(Hook):
         :returns: A name that matches the user's ``login`` field in Shotgun.
         :rtype: str
         """
-        if is_windows():
+        if sys.platform == "win32":
             # http://stackoverflow.com/questions/117014/how-to-retrieve-name-of-current-windows-user-ad-or-local-using-python
             return os.environ.get("USERNAME", None)
         else:
             try:
                 import pwd
-
                 pwd_entry = pwd.getpwuid(os.geteuid())
                 return pwd_entry[0]
             except:

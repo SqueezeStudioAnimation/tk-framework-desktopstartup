@@ -28,11 +28,13 @@ from .errors import (
     ConsoleLoginNotSupportedError,
 )
 from tank_vendor.shotgun_api3 import MissingTwoFactorAuthenticationFault
-from .sso_saml2 import is_autodesk_identity_enabled_on_site, is_sso_enabled_on_site
+from .sso_saml2 import (
+    is_autodesk_identity_enabled_on_site,
+    is_sso_enabled_on_site,
+)
 from ..util.shotgun.connection import sanitize_url
 
 from getpass import getpass
-from tank_vendor.six.moves import input
 
 logger = LogManager.get_logger(__name__)
 
@@ -73,9 +75,7 @@ class ConsoleAuthenticationHandlerBase(object):
         while True:
             # Get the credentials from the user
             try:
-                hostname, login, password = self._get_user_credentials(
-                    hostname, login, http_proxy
-                )
+                hostname, login, password = self._get_user_credentials(hostname, login, http_proxy)
             except EOFError:
                 # Insert a \n on the current line so the print is displayed on a new time.
                 print()
@@ -84,27 +84,17 @@ class ConsoleAuthenticationHandlerBase(object):
             try:
                 try:
                     # Try to generate a session token and return the user info.
-                    return (
-                        hostname,
-                        login,
-                        session_cache.generate_session_token(
-                            hostname, login, password, http_proxy
-                        ),
-                        None,
-                    )
+                    return hostname, login, session_cache.generate_session_token(
+                        hostname, login, password, http_proxy
+                    ), None
                 except MissingTwoFactorAuthenticationFault:
                     # session_token was None, we need 2fa.
                     code = self._get_2fa_code()
                     # Ask again for a token using 2fa this time. If this throws an AuthenticationError because
                     # the code is invalid or already used, it will be caught by the except clause beneath.
-                    return (
-                        hostname,
-                        login,
-                        session_cache.generate_session_token(
-                            hostname, login, password, http_proxy, auth_token=code
-                        ),
-                        None,
-                    )
+                    return hostname, login, session_cache.generate_session_token(
+                        hostname, login, password, http_proxy, auth_token=code
+                    ), None
             except AuthenticationError:
                 # If any combination of credentials are invalid (user + invalid pass or
                 # user + valid pass + invalid 2da code) we'll end up here.
@@ -144,7 +134,7 @@ class ConsoleAuthenticationHandlerBase(object):
 
         :returns: The user's text input.
         """
-        return input(text).strip()
+        return raw_input(text).strip()
 
     def _get_keyboard_input(self, label, default_value=""):
         """
@@ -170,9 +160,7 @@ class ConsoleAuthenticationHandlerBase(object):
         :raises AuthenticationCancelled: If the user enters an empty code, the exception will be
                                          thrown.
         """
-        code = self._read_clean_input(
-            "Two factor authentication code (empty to abort): "
-        )
+        code = self._read_clean_input("Two factor authentication code (empty to abort): ")
         if not code:
             raise AuthenticationCancelled()
         return code

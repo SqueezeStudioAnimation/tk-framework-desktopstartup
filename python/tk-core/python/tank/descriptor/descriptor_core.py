@@ -18,9 +18,7 @@ class CoreDescriptor(Descriptor):
     Descriptor object which describes a Toolkit Core API version.
     """
 
-    def __init__(
-        self, sg_connection, io_descriptor, bundle_cache_root_override, fallback_roots
-    ):
+    def __init__(self, sg_connection, io_descriptor, bundle_cache_root_override, fallback_roots):
         """
         .. note:: Use the factory method :meth:`create_descriptor` when
                   creating new descriptor objects.
@@ -48,9 +46,7 @@ class CoreDescriptor(Descriptor):
 
         manifest = self._get_manifest()
 
-        constraints["min_sg"] = manifest.get(
-            "requires_shotgun_version", constants.LOWEST_SHOTGUN_VERSION
-        )
+        constraints["min_sg"] = manifest.get("requires_shotgun_version", constants.LOWEST_SHOTGUN_VERSION)
 
         return constraints
 

@@ -109,19 +109,16 @@ class Configuration(object):
         # However if we really want to read the core from somewhere else (ex: the bundle_cache), we need a more efficient
         # way of determining it's location. Environment variable is the go-to solution for this.
         if 'SQ_TK_CORE_LOCATION' in os.environ:
-            python_core_path = os.path.join(os.environ['SQ_TK_CORE_LOCATION'], "python")
+            core_path = os.path.join(os.environ['SQ_TK_CORE_LOCATION'], "python")
         else:
-            python_core_path = pipelineconfig_utils.get_core_python_path_for_config(path)
+            core_path = pipelineconfig_utils.get_core_python_path_for_config(path)
 
         # Get the user before the core swapping and serialize it.
         serialized_user = serialize_user(sg_user)
 
         # Caching support for the Web authentication flow.
         support_web_login = get_shotgun_authenticator_support_web_login()
-        log.debug(
-            "Caching the old core's support of the Unified Login Flow: %s"
-            % support_web_login
-        )
+        log.debug("Caching the old core's support of the Unified Login Flow: %s" % support_web_login)
 
         # Stop claims renewal before swapping core, but only if the claims loop
         # is actually active.
@@ -142,7 +139,6 @@ class Configuration(object):
         if support_web_login:
             try:
                 from ..authentication import set_shotgun_authenticator_support_web_login
-
                 log.debug("This core fully supports the Unified Login Flow.")
                 set_shotgun_authenticator_support_web_login(support_web_login)
             except ImportError:
@@ -199,17 +195,13 @@ class Configuration(object):
         # passed in, so we'll have to be backwards compatible with these. If the pipeline
         # configuration does support the get_configuration_descriptor method however, we can
         # pass the descriptor in.
-        if hasattr(
-            pipelineconfig.PipelineConfiguration, "get_configuration_descriptor"
-        ):
+        if hasattr(pipelineconfig.PipelineConfiguration, "get_configuration_descriptor"):
             pc = pipelineconfig.PipelineConfiguration(path, self.descriptor)
         else:
             pc = pipelineconfig.PipelineConfiguration(path)
         tk = api.tank_from_path(pc)
 
-        log.debug(
-            "Bootstrapped into tk instance %r (%r)" % (tk, tk.pipeline_configuration)
-        )
+        log.debug("Bootstrapped into tk instance %r (%r)" % (tk, tk.pipeline_configuration))
         log.debug("Core API code located here: %s" % inspect.getfile(tk.__class__))
 
         return tk
@@ -229,8 +221,9 @@ class Configuration(object):
             return True
 
         log.debug(
-            "Avoided core swap on identical paths: '%s' (current) vs '%s' (target)"
-            % (current_python_core_path, target_python_core_path)
+            "Avoided core swap on identical paths: '%s' (current) vs '%s' (target)" % (
+                current_python_core_path, target_python_core_path
+            )
         )
         return False
 
@@ -241,13 +234,10 @@ class Configuration(object):
         :returns: a string.
         """
         import sgtk
-
         # Remove sgtk/__init__.py from the module name to get the "python" folder.
         return os.path.abspath(os.path.dirname(os.path.dirname(sgtk.__file__)))
 
-    def _set_authenticated_user(
-        self, bootstrap_user, bootstrap_user_login, serialized_user
-    ):
+    def _set_authenticated_user(self, bootstrap_user, bootstrap_user_login, serialized_user):
         """
         Sets the authenticated user.
 
@@ -271,10 +261,7 @@ class Configuration(object):
         # module, so try to import.
         try:
             # Use backwards compatible imports.
-            from tank_vendor.shotgun_authentication import (
-                ShotgunAuthenticator,
-                deserialize_user,
-            )
+            from tank_vendor.shotgun_authentication import ShotgunAuthenticator, deserialize_user
             from ..util import CoreDefaultsManager
         except ImportError:
             log.debug("Using pre-0.16 core, no authenticated user will be set.")
@@ -324,8 +311,7 @@ class Configuration(object):
                 # This also handle the case where a local install has a server dedicated to the webapp
                 # traffic and another for API traffic.
                 log.debug(
-                    "User retrieved for the project (%r) is the same as for the bootstrap.",
-                    default_user,
+                    "User retrieved for the project (%r) is the same as for the bootstrap.", default_user
                 )
                 project_user = default_user
             else:
@@ -334,8 +320,7 @@ class Configuration(object):
                 log.warning(
                     "It appears the user '%s' used for bootstrap is different than the one for the "
                     "project '%s'. Toolkit will use the user from the bootstrap for coherence.",
-                    bootstrap_user_login,
-                    default_user.login,
+                    bootstrap_user_login, default_user.login
                 )
                 pass
         else:
@@ -355,8 +340,7 @@ class Configuration(object):
                 )
                 log.error(
                     "Startup will continue, but you should look into what caused this issue and fix it. "
-                    "Please contact %s to troubleshoot this issue.",
-                    constants.SUPPORT_EMAIL,
+                    "Please contact %s to troubleshoot this issue.", constants.SUPPORT_EMAIL
                 )
                 project_user = bootstrap_user
 
