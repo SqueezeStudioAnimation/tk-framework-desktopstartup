@@ -77,6 +77,12 @@ def load_plugin(plugin_file, valid_base_class, alternate_base_classes=None):
     finally:
         imp.release_lock()
 
+    def inherits_from(child, parent_name):
+        if inspect.isclass(child):
+            if parent_name in [c.__name__ for c in inspect.getmro(child)[1:]]:
+                return True
+        return False
+
     # cool, now validate the module
     found_classes = list()
     try:
@@ -95,7 +101,7 @@ def load_plugin(plugin_file, valid_base_class, alternate_base_classes=None):
         # Enumerate the valid_base_classes in order so that we find the highest derived
         # class we can.
         for base_cls in valid_base_classes:
-            found_classes = [cls for cls in all_classes if issubclass(cls, base_cls)]
+            found_classes = [cls for cls in all_classes if inherits_from(cls, base_cls.__name__)]
             if len(found_classes) > 1:
                 # it's possible that this file contains multiple levels of derivation - if this
                 # is the case then we should try to remove any intermediate classes from the list
