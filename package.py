@@ -1,6 +1,6 @@
 name = 'shotgougoune'
 
-version = '1.8.2.r3'
+version = '1.8.3.r3'
 
 private_build_requires = ['rez_utils']
 
