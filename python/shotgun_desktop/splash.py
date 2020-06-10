@@ -8,8 +8,7 @@
 # agreement to the Shotgun Pipeline Toolkit Source Code License. All rights
 # not expressly granted therein are reserved by Shotgun Software Inc.
 
-from PySide import QtGui
-from PySide import QtCore
+from .qt import QtGui, QtCore
 
 from .ui import splash
 
@@ -18,6 +17,7 @@ class Splash(QtGui.QDialog):
     """
     Splash screen with customizable message shown during the application startup.
     """
+
     def __init__(self, parent=None):
         """
         Constructor. Widget is initially hidden.

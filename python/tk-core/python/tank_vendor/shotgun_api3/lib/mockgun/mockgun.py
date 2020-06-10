@@ -87,11 +87,11 @@ exactly like the real Shotgun one:
     sg = mockgun.Shotgun("https://mysite.shotgunstudio.com", script_name="xyz", api_key="abc")
 
     # now you can start putting stuff in
-    print sg.create("HumanUser", {"firstname": "John", "login": "john"})
+    print(sg.create("HumanUser", {"firstname": "John", "login": "john"}))
     # prints {'login': 'john', 'type': 'HumanUser', 'id': 1, 'firstname': 'John'}
 
     # and find what you have created
-    print sg.find("HumanUser", [["login", "is", "john"]])
+    print(sg.find("HumanUser", [["login", "is", "john"]]))
     prints [{'type': 'HumanUser', 'id': 1}]
 
 That's it! Mockgun is used to run the Shotgun Pipeline Toolkit unit test rig.
@@ -114,13 +114,13 @@ Below is a non-exhaustive list of things that we still need to implement:
 
 """
 
-import copy
 import datetime
 
 from ... import ShotgunError
 from ...shotgun import _Config
 from .errors import MockgunError
 from .schema import SchemaFactory
+from .. import six
 
 # ----------------------------------------------------------------------------
 # Version
@@ -193,6 +193,8 @@ class Shotgun(object):
         # they way they would expect to in the real API.
         self.config = _Config(self)
 
+        self.config.set_server_params(base_url)
+
         # load in the shotgun schema to associate with this Shotgun
         (schema_path, schema_entity_path) = self.get_schema_paths()
 
@@ -218,12 +220,11 @@ class Shotgun(object):
 
         self.finds = 0
 
-        self._current_user = None
     ###################################################################################################
     # public API methods
-    def set_current_user(self, sg_user):
-        # Used to fill the 'created_by' field automatically.
-        self._current_user = sg_user
+
+    def get_session_token(self):
+        return "bogus_session_token"
 
     def schema_read(self):
         return self._schema
@@ -242,7 +243,7 @@ class Shotgun(object):
 
     def schema_field_read(self, entity_type, field_name=None):
         if field_name is None:
-            return copy.copy(self._schema[entity_type])  # prevent artifacts
+            return self._schema[entity_type]
         else:
             return dict((k, v) for k, v in self._schema[entity_type].items() if k == field_name)
 
@@ -256,24 +257,6 @@ class Shotgun(object):
         self._validate_entity_type(entity_type)
         # do not validate custom fields - this makes it hard to mock up a field quickly
         # self._validate_entity_fields(entity_type, fields)
-
-        # Configure fields
-        if fields is None:
-            requested_fields = set(["type", "id"])
-        else:
-            requested_fields = set(fields) | set(["type", "id"])
-
-        # Include fields from the order argument in the searched fields
-        order_fields = set()
-        if order:
-            for o in order:
-                order_fields.add(o['field_name'])
-
-        # Merge the requested fields and the order fields.
-        # We need all those to property order the results but still return only requested fields.
-        all_fields = set()
-        all_fields.update(requested_fields)
-        all_fields.update(order_fields)
 
         # FIXME: This should be refactored so that we can use the complex filer
         # style in nested filter operations.
@@ -297,7 +280,7 @@ class Shotgun(object):
                     resolved_filters.append([f["path"], f["relation"], f["values"][0]])
 
         else:
-            # traditional style sg filters
+            # traditiona style sg filters
             resolved_filters = filters
 
         results = [
@@ -308,13 +291,7 @@ class Shotgun(object):
             )
         ]
 
-        # Extract fields from row
-        val = [dict((field, self._get_field_from_row(entity_type, row, field)) for field in all_fields) for row in results]
-
-        # Add the special 'name' field on the entity and multi-entity values.
-        val = [dict((field_name, self._handle_name_field(field_value)) for field_name, field_value in item.iteritems()) for item in val]
-
-        # Handle the ordering of the result after we requested additional fields from results.
+        # handle the ordering of the recordset
         if order:
             # order: [{"field_name": "code", "direction": "asc"}, ... ]
             for order_entry in order:
@@ -329,15 +306,15 @@ class Shotgun(object):
                 else:
                     raise ValueError("Unknown ordering direction")
 
-                val = sorted(val, key=lambda k: k[order_field], reverse=desc_order)
+                results = sorted(results, key=lambda k: k[order_field], reverse=desc_order)
 
-        # Remove any fields that was not explicitely requested.
-        fields_to_remove = all_fields - requested_fields
-        for v in val:
-            for field in fields_to_remove:
-                v.pop(field)
+        if fields is None:
+            fields = set(["type", "id"])
+        else:
+            fields = set(fields) | set(["type", "id"])
 
-        return val
+        # get the values requested
+        val = [dict((field, self._get_field_from_row(entity_type, row, field)) for field in fields) for row in results]
 
         return val
 
@@ -364,14 +341,6 @@ class Shotgun(object):
             else:
                 raise ShotgunError("Invalid request type %s in request %s" % (request["request_type"], request))
         return results
-    
-    def _get_next_id(self, entity_type):
-        try:
-            # get next id in this table
-            next_id = max(self._db[entity_type]) + 1
-        except ValueError:
-            next_id = 1
-        return next_id
 
     def create(self, entity_type, data, return_fields=None):
 
@@ -402,37 +371,11 @@ class Shotgun(object):
             next_id = 1
 
         row = self._get_new_row(entity_type)
+
         self._update_row(entity_type, row, data)
         row["id"] = next_id
 
-        # created_at can be set by a shotgun.create call, only set it automatically if not previously set.
-        if row.get("created_at") is None:
-            row["created_at"] = datetime.datetime.now()
-
         self._db[entity_type][next_id] = row
-
-        # Create EventLogEntries
-        if entity_type != 'EventLogEntry':  # prevent infinite loop
-            self.create('EventLogEntry', {
-                'event_type': 'Shotgun_{0}_New'.format(entity_type),
-                'entity': {'type': entity_type, 'id': next_id},
-                'meta': {'entity_id': next_id, 'entity_type': entity_type, 'type': 'new_entity'},
-                # todo: add project
-            })
-            # {'attribute_name': None,
-            # 'cached_display_name': None,
-            # 'created_at': datetime.datetime(2017, 5, 16, 8, 26, 46, tzinfo=<tank_vendor.shotgun_api3.lib.sgtimezone.LocalTimezone object at 0x2d440d0>),
-            # 'description': 'Gabrielle Gagnon created new Asset ',
-            # 'entity': None,
-            # 'event_type': 'Shotgun_Asset_New',
-            # 'filmstrip_image': None,
-            # 'id': 56534670,
-            # 'image': None,
-            # 'meta': {'entity_id': 4352, 'entity_type': 'Asset', 'type': 'new_entity'},
-            # 'project': {'id': 339, 'name': 'Lynx-RushOfJustice', 'type': 'Project'},
-            # 'session_uuid': 'dacd1664-3a32-11e7-97b8-0242ac110004',
-            # 'type': 'EventLogEntry',
-            # 'user': {'id': 152, 'name': 'Gabrielle Gagnon', 'type': 'HumanUser'}}
 
         if return_fields is None:
             result = dict((field, self._get_field_from_row(entity_type, row, field)) for field in data)
@@ -444,13 +387,13 @@ class Shotgun(object):
 
         return result
 
-    def update(self, entity_type, entity_id, data, multi_entity_update_modes=None):
+    def update(self, entity_type, entity_id, data):
         self._validate_entity_type(entity_type)
         self._validate_entity_data(entity_type, data)
         self._validate_entity_exists(entity_type, entity_id)
 
         row = self._db[entity_type][entity_id]
-        self._update_row(entity_type, row, data, multi_entity_update_modes)
+        self._update_row(entity_type, row, data)
 
         return [dict((field, item) for field, item in row.items() if field in data or field in ("type", "id"))]
 
@@ -551,13 +494,12 @@ class Shotgun(object):
                                    "float": float,
                                    "checkbox": bool,
                                    "percent": int,
-                                   "text": basestring,
+                                   "text": six.string_types,
                                    "serializable": dict,
                                    "date": datetime.date,
                                    "date_time": datetime.datetime,
-                                   "list": basestring,
-                                   "status_list": basestring,
-                                   "color": basestring,
+                                   "list": six.string_types,
+                                   "status_list": six.string_types,
                                    "url": dict}[sg_type]
                 except KeyError:
                     raise ShotgunError(
@@ -618,10 +560,6 @@ class Shotgun(object):
         """
         # If we have a list of scalar values
         if isinstance(lval, list) and field_type != "multi_entity":
-            # If the list is empty, the return value will depend if we are checking for None or not.
-            if not lval:
-                return self._compare(field_type, None, operator, rval)
-
             # Compare each one. If one matches the predicate we're good!
             return any((self._compare(field_type, sub_val, operator, rval)) for sub_val in lval)
 
@@ -651,9 +589,9 @@ class Shotgun(object):
             elif operator == "is_not":
                 return lval != rval
             elif operator == "in":
-                return rval and lval in rval  # rval might be None
+                return lval in rval
             elif operator == "not_in":
-                return not rval or lval not in rval  # rval might be None
+                return lval not in rval
         elif field_type == "entity_type":
             if operator == "is":
                 return lval == rval
@@ -663,15 +601,17 @@ class Shotgun(object):
             elif operator == "is_not":
                 return lval != rval
             elif operator == "in":
-                return rval and lval in rval  # rval might be None
+                return lval in rval
             elif operator == "contains":
-                return lval and rval in lval  # lval might be None
+                return rval in lval
             elif operator == "not_contains":
-                return not lval or lval not in rval  # lval might be None
+                return lval not in rval
             elif operator == "starts_with":
                 return lval.startswith(rval)
             elif operator == "ends_with":
                 return lval.endswith(rval)
+            elif operator == "not_in":
+                return lval not in rval
         elif field_type == "entity":
             if operator == "is":
                 # If one of the two is None, ensure both are.
@@ -746,6 +686,11 @@ class Shotgun(object):
                 elif not isinstance(field_value, dict):
                     raise ShotgunError("Invalid deep query field %s.%s" % (entity_type, field))
 
+                # make sure that types in the query match type in the linked field
+                if entity_type2 != field_value["type"]:
+                    raise ShotgunError("Deep query field %s.%s does not match type "
+                                       "with data %s" % (entity_type, field, field_value))
+
                 # ok so looks like the value is an entity link
                 # e.g. db contains: {"sg_sequence": {"type":"Sequence", "id": 123 } }
                 linked_row = self._db[field_value["type"]][field_value["id"]]
@@ -763,52 +708,7 @@ class Shotgun(object):
                 # sg returns none for unknown stuff
                 return None
 
-    def _handle_name_field(self, val):
-        """
-        Inject the 'name' field if missing.
-        This is used to reproduce the default shotgun behavior when returning entity fields from find().
-        Example:
-        >>> sg.find_one('Task', [['project', 'is_not', None]], ['project'])
-        {'project': {'type': 'Project', 'id': 65, 'name': 'Demo Animation Project'}, 'type': 'Task', 'id': 156}
-        """
-        # Here are the fields that can be used to create the 'name' field
-        source_field_names = (
-            'name',  # ex: Project entity
-            'code',  # ex: Shot entity
-            'content',  # ex: Task entity
-        )
-
-        if isinstance(val, list):  # list of entity
-            return [self._handle_name_field(item) for item in val]
-        elif isinstance(val, dict) and "type" in val and "id" in val:  # entity
-            if "name" not in val:
-                entity_type = val["type"]
-                entity_id = val["id"]
-
-                val = copy.copy(val)  # ensure we do not modify the database by accident
-                row = self._db[entity_type][entity_id]
-
-                # Resolve the value associated with the field
-                for field_name in source_field_names:
-                    try:
-                        field_value = row[field_name]
-                    except LookupError:
-                        continue
-                    val["name"] = field_value
-                    break
-
-                if "name" not in val:
-                    raise ShotgunError("Cannot resolve name field from {0} #{1}: {2}".format(
-                        entity_type, entity_id, row
-                    ))
-            return val
-        else:
-            return val
-
     def _get_field_type(self, entity_type, field):
-        # The 'id' field is not included in the schema???
-        if field == 'id':
-            return 'number'
         # split dotted form fields
         try:
             field2, entity_type2, field3 = field.split(".", 2)
@@ -910,85 +810,15 @@ class Shotgun(object):
         else:
             raise ShotgunError("%s is not a valid filter operator" % filter_operator)
 
-    def _create_event_attribute_change(self, entity, attr_name, old_val, new_val):
-        # {'attribute_name': 'color',
-        #  'cached_display_name': None,
-        #  'created_at': datetime.datetime(2017, 5, 16, 8, 25, 3, tzinfo=<tank_vendor.shotgun_api3.lib.sgtimezone.LocalTimezone object at 0x210f050>),
-        #  'description': 'Gabrielle Gagnon changed "Gantt Bar Color" from "" to "pipeline_step" on Task LegoDirecting',
-        #  'entity': None,
-        #  'event_type': 'Shotgun_Task_Change',
-        #  'filmstrip_image': None,
-        #  'id': 56534551,
-        #  'image': None,
-        #  'meta': {'attribute_name': 'color',
-        #           'entity_id': 73747,
-        #           'entity_type': 'Task',
-        #           'field_data_type': 'color',
-        #           'in_create': True,
-        #           'new_value': 'pipeline_step',
-        #           'old_value': None,
-        #           'type': 'attribute_change'},
-        #  'project': {'id': 342, 'name': 'Lego-LegoCity', 'type': 'Project'},
-        #  'session_uuid': '94a8057c-3a32-11e7-97b8-0242ac110004',
-        #  'type': 'EventLogEntry',
-        #  'user': {'id': 152, 'name': 'Gabrielle Gagnon', 'type': 'HumanUser'}}
-
-        self.create('EventLogEntry', {
-            'attribute_name': attr_name,
-            # 'description': '{0} changed "{1}" from "{2}" to "{3}" on {4} {5}'.format(
-            #     'MockedUser', attr_name, old_val, new_val, entity['type'], entity['name']
-            # ),
-            'entity': {'type': entity['type'], 'id': entity['id']},
-            'event_type': 'Shotgun_{0}_Change'.format(entity['type']),
-            'meta': {
-                'attribute_name': attr_name,
-                'entity_id': entity['id'],
-                'entity_type': entity['type'],
-                # 'field_data_type': # todo
-                # 'in_create':  # todo
-                'new_value': new_val,
-                'old_value': old_val,
-                'type': 'attribute_change'
-            },
-            # 'project': # todo
-            'user': self._current_user,
-        })
-
-    def _is_entity_in_list(self, entity, list_):
-        """
-        Utility method that check if an entity is in a multi-entity list.
-        It only check the type and id, which is useful if we have other fields like 'name' in our values.
-        """
-        for entry in list_:
-            if entry["type"] == entity["type"] and entry["id"] == entity["id"]:
-                return True
-        return False
-
-    def _update_row(self, entity_type, row, data, multi_entity_update_modes=None):
+    def _update_row(self, entity_type, row, data):
         for field in data:
             field_type = self._get_field_type(entity_type, field)
-            old_val = row[field]
             if field_type == "entity" and data[field]:
-                new_val = {"type": data[field]["type"], "id": data[field]["id"]}
+                row[field] = {"type": data[field]["type"], "id": data[field]["id"]}
             elif field_type == "multi_entity":
-                update_mode = multi_entity_update_modes.get(entity_type, "set") if multi_entity_update_modes is not None else "set"
-                if update_mode == 'set':
-                    new_val = [{"type": item["type"], "id": item["id"]} for item in data[field]]
-                elif update_mode == 'add':
-                    new_val = copy.copy(row[field])
-                    for item in data[field]:
-                        if not self._is_entity_in_list(item, new_val):
-                            new_val.append({"type": item["type"], "id": item["id"]})
-                elif update_mode == "remove":
-                    entities_to_remove = data[field]
-                    new_val = [item for item in row[field] if not self._is_entity_in_list(item, entities_to_remove)]
-                else:
-                    raise Exception("Unsupported update_mode {0}".format(update_mode))
+                row[field] = [{"type": item["type"], "id": item["id"]} for item in data[field]]
             else:
-                new_val = data[field]
-            row[field] = new_val
-            if entity_type != 'EventLogEntry':
-                self._create_event_attribute_change(row, field, old_val, new_val)
+                row[field] = data[field]
 
     def _validate_entity_exists(self, entity_type, entity_id):
         if entity_id not in self._db[entity_type]:

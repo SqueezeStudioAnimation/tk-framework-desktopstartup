@@ -10,10 +10,12 @@
 
 import os
 import sys
-import urlparse
+from tank_vendor.six.moves.urllib import parse
 import pprint
+import sgtk
 
 from sgtk import LogManager
+
 logger = LogManager.get_logger(__name__)
 
 
@@ -30,17 +32,20 @@ def get_pipeline_configuration_info(connection):
     """
 
     # find what path field from the entity we need
-    if sys.platform == "darwin":
-        plat_key = "mac_path"
-    elif sys.platform == "win32":
-        plat_key = "windows_path"
-    elif sys.platform.startswith("linux"):
-        plat_key = "linux_path"
-    else:
-        raise RuntimeError("unknown platform: %s" % sys.platform)
+
+    plat_key = sgtk.util.ShotgunPath.get_shotgun_storage_key()
 
     # interesting fields to return
-    fields = ["id", "code", "windows_path", "mac_path", "linux_path", "project", "sg_plugin_ids", "plugin_ids"]
+    fields = [
+        "id",
+        "code",
+        "windows_path",
+        "mac_path",
+        "linux_path",
+        "project",
+        "sg_plugin_ids",
+        "plugin_ids",
+    ]
 
     # Find the right pipeline configuration. We'll always pick a projectless
     # one over one with the Template Project. To have a deterministic behaviour,
@@ -57,34 +62,40 @@ def get_pipeline_configuration_info(connection):
 
     pcs = connection.find(
         "PipelineConfiguration",
-        [{
-            "filter_operator": "any",
-            "filters": [
-                ["project", "is", None],
-                {
-                    "filter_operator": "all",
-                    "filters": [
-                        ["project.Project.name", "is", "Template Project"],
-                        ["project.Project.layout_project", "is", None]
-                    ]
-                }
-            ]
-        }],
+        [
+            {
+                "filter_operator": "any",
+                "filters": [
+                    ["project", "is", None],
+                    {
+                        "filter_operator": "all",
+                        "filters": [
+                            ["project.Project.name", "is", "Template Project"],
+                            ["project.Project.layout_project", "is", None],
+                        ],
+                    },
+                ],
+            }
+        ],
         fields=fields,
         order=[
             # Sorting on the project id doesn't actually matter. We want
             # some sorting simply because this will force grouping between
             # configurations with a project and those that don't.
             {"field_name": "project.Project.id", "direction": "asc"},
-            {"field_name": "id", "direction": "desc"}
-        ]
+            {"field_name": "id", "direction": "desc"},
+        ],
     )
 
     # We don't filter in the Shotgun query for the plugin ids because not every site these fields yet.
     # So if any pipeline configurations with a plugin id was returned, filter them it out.
-    pcs = filter(lambda pc: not(pc.get("sg_plugin_ids") or pc.get("plugin_ids")), pcs)
+    pcs = list(
+        filter(lambda pc: not (pc.get("sg_plugin_ids") or pc.get("plugin_ids")), pcs)
+    )
 
-    logger.debug("These non-plugin_id based pipeline configurations were found by Desktop:")
+    logger.debug(
+        "These non-plugin_id based pipeline configurations were found by Desktop:"
+    )
     logger.debug(pprint.pformat(pcs))
 
     if len(pcs) == 0:
@@ -96,8 +107,8 @@ def get_pipeline_configuration_info(connection):
         # Log a warning if there was more than one pipeline configuration found.
         if len(pcs) > 1:
             logger.info(
-                "More than one pipeline configuration was found (%s), using %d" %
-                (", ".join([str(p["id"]) for p in pcs]), pc["id"])
+                "More than one pipeline configuration was found (%s), using %d"
+                % (", ".join([str(p["id"]) for p in pcs]), pc["id"])
             )
 
     logger.debug("This pipeline configuration will be used:")
@@ -109,11 +120,11 @@ def get_pipeline_configuration_info(connection):
         return (str(pc[plat_key]), pc, True)
 
     # get operating system specific root
-    if sys.platform == "darwin":
+    if sgtk.util.is_macos():
         pc_root = os.path.expanduser("~/Library/Application Support/Shotgun")
-    elif sys.platform == "win32":
+    elif sgtk.util.is_windows():
         pc_root = os.path.join(os.environ["APPDATA"], "Shotgun")
-    elif sys.platform.startswith("linux"):
+    elif sgtk.util.is_linux():
         pc_root = os.path.expanduser("~/.shotgun")
 
     # add on site specific postfix
@@ -127,5 +138,5 @@ def __get_site_from_connection(connection):
     """ return the site from the information in the connection """
     # grab just the non-port part of the netloc of the url
     # eg site.shotgunstudio.com
-    site = urlparse.urlparse(connection.base_url)[1].split(":")[0]
+    site = parse.urlparse(connection.base_url)[1].split(":")[0]
     return site
