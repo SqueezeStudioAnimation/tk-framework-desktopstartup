@@ -67,17 +67,8 @@ class Entity(Folder):
             create_with_parent,
         )
 
-    def __init__(
-        self,
-        tk,
-        parent,
-        full_path,
-        metadata,
-        entity_type,
-        field_name_expression,
-        filters,
-        create_with_parent,
-    ):
+    def __init__(self, tk, parent, full_path, metadata, entity_type, field_name_expression, filters,
+                 create_with_parent):
         """
         Constructor.
 
@@ -141,7 +132,6 @@ class Entity(Folder):
         items_created = []
 
         for entity in self.__get_entities(sg_data):
-
             # generate the field name
             folder_name = self._entity_expression.generate_name(entity)
 
@@ -238,11 +228,22 @@ class Entity(Folder):
         fields_list = list(fields)
 
         # now find all the items (e.g. shots) matching this query
-        entities = self._tk.shotgun.find(
-            self._entity_type, resolved_filters, fields_list
-        )
+        entities = self._tk.shotgun.find(self._entity_type, resolved_filters, fields_list)
 
-        return entities
+        entities_to_remove = []
+        for entity in entities:
+            if entity.get('type') == 'Step' and entity.get('code') == 'Production':
+                if entity not in entities_to_remove:
+                    entities_to_remove.append(entity)
+            if entity.get('type') == 'Task' and entity.get('step').get('name') == 'Production':
+                if entity not in entities_to_remove:
+                    entities_to_remove.append(entity)
+            if entity.get('milestone'):
+                if entity not in entities_to_remove:
+                    entities_to_remove.append(entity)
+
+        # Filtered entities
+        return [entity for entity in entities if entity not in entities_to_remove]
 
     def extract_shotgun_data_upwards(self, sg, shotgun_data):
         """

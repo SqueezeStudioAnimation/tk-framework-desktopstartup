@@ -72,6 +72,16 @@ def create_io_descriptor(
     :returns: Descriptor object
     :raises: :class:`TankDescriptorError`
     """
+    from .base import IODescriptorBase
+    from .appstore import IODescriptorAppStore
+    from .dev import IODescriptorDev
+    from .path import IODescriptorPath
+    from .shotgun_entity import IODescriptorShotgunEntity
+    from .git_tag import IODescriptorGitTag
+    from .git_branch import IODescriptorGitBranch
+    from .manual import IODescriptorManual
+    from .rez import IODescriptorRez
+
     # resolve into both dict and uri form
     if isinstance(dict_or_uri, six.string_types):
         descriptor_dict = IODescriptorBase.dict_from_uri(dict_or_uri)
@@ -94,7 +104,35 @@ def create_io_descriptor(
         descriptor_dict["version"] = six.ensure_str(descriptor_dict["version"])
 
     # instantiate the Descriptor
-    descriptor = IODescriptorBase.create(descriptor_type, descriptor_dict, sg)
+    # descriptor = IODescriptorBase.create(descriptor_type, descriptor_dict, sg)
+
+    # factory logic
+    if descriptor_dict.get("type") == "app_store":
+        descriptor = IODescriptorAppStore(descriptor_dict, sg, descriptor_type)
+
+    elif descriptor_dict.get("type") == "shotgun":
+        descriptor = IODescriptorShotgunEntity(descriptor_dict, sg, descriptor_type)
+
+    elif descriptor_dict.get("type") == "manual":
+        descriptor = IODescriptorManual(descriptor_dict, sg, descriptor_type)
+
+    elif descriptor_dict.get("type") == "git":
+        descriptor = IODescriptorGitTag(descriptor_dict, sg, descriptor_type)
+
+    elif descriptor_dict.get("type") == "git_branch":
+        descriptor = IODescriptorGitBranch(descriptor_dict, sg, descriptor_type)
+
+    elif descriptor_dict.get("type") == "dev":
+        descriptor = IODescriptorDev(descriptor_dict, sg, descriptor_type)
+
+    elif descriptor_dict.get("type") == "path":
+        descriptor = IODescriptorPath(descriptor_dict, sg, descriptor_type)
+    
+    elif descriptor_dict.get("type") == "rez":
+        descriptor = IODescriptorRez(descriptor_dict, sg, descriptor_type)
+
+    else:
+        raise TankDescriptorError("Unknown descriptor type for '%s'" % descriptor_dict)
 
     # specify where to go look for caches
     descriptor.set_cache_roots(bundle_cache_root, fallback_roots)
