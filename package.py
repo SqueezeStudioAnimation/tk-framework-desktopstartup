@@ -1,6 +1,6 @@
 name = 'shotgun'
 
-version = '1.11.0'
+version = '1.11.1'
 
 private_build_requires = ['rez_utils']
 
