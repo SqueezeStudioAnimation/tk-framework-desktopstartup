@@ -1,4 +1,4 @@
-name = 'shotgougoune'
+name = 'shotgun'
 
 version = '1.11.0'
 
